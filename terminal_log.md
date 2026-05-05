@@ -668,3 +668,176 @@ Authorized users only. All activities may be monitored and reported.
 通过: 5 / 5
 
 Authorized users only. All activities may be monitored and reported.
+[s2412456@master_ubss1 svd]$ sh test.sh 1 1 1
+Submitted job with ID: 10803.master_ubss1
+Compile opt: -O2
+Seed: 20260409
+Traceback (most recent call last):
+  File "/usr/local/bin/pssh", line 106, in <module>
+    opts, args = parse_args()
+  File "/usr/local/bin/pssh", line 49, in parse_args
+    parser = option_parser()
+  File "/usr/local/bin/pssh", line 31, in option_parser
+    parser = common_parser()
+  File "/usr/local/lib/python3.9/site-packages/psshlib/cli.py", line 22, in common_parser
+    version=version.VERSION)
+AttributeError: module 'version' has no attribute 'VERSION'
+
+Authorized users only. All activities may be monitored and reported.
+
+Authorized users only. All activities may be monitored and reported.
+Traceback (most recent call last):
+  File "/usr/local/bin/pscp", line 92, in <module>
+    opts, args = parse_args()
+  File "/usr/local/bin/pscp", line 39, in parse_args
+    parser = option_parser()
+  File "/usr/local/bin/pscp", line 28, in option_parser
+    parser = common_parser()
+  File "/usr/local/lib/python3.9/site-packages/psshlib/cli.py", line 22, in common_parser
+    version=version.VERSION)
+AttributeError: module 'version' has no attribute 'VERSION'
+=== 固定值 5x5 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 3.87116e-12
+  relative recon error      : 2.76702e-13
+  ||U^T U-I||_F             : 1.55583e-15
+  ||V^T V-I||_F             : 1.42322e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 0.01075
+  time gkh iteration(ms)    : 0.03214
+  结果: PASS
+
+=== 随机 8x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.12327e-14
+  relative recon error      : 7.41499e-16
+  ||U^T U-I||_F             : 1.80321e-15
+  ||V^T V-I||_F             : 1.52765e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 0.00999
+  time gkh iteration(ms)    : 0.01554
+  结果: PASS
+
+=== 近秩亏损 10x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 2.09799e-13
+  relative recon error      : 1.94571e-14
+  ||U^T U-I||_F             : 2.46675e-15
+  ||V^T V-I||_F             : 2.23351e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 0.01041
+  time gkh iteration(ms)    : 0.01767
+  结果: PASS
+
+=== 随机 10x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.32266e-11
+  relative recon error      : 6.32491e-13
+  ||U^T U-I||_F             : 2.43461e-15
+  ||V^T V-I||_F             : 1.83272e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 0.00688
+  time gkh iteration(ms)    : 0.01493
+  结果: PASS
+
+=== 随机 1000x1000 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.84725e-10
+  relative recon error      : 3.19182e-13
+  ||U^T U-I||_F             : 2.38363e-13
+  ||V^T V-I||_F             : 2.37297e-13
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 7981.55
+  time gkh iteration(ms)    : 31966.6
+  结果: PASS
+
+==============================
+随机种子基值: 20260409
+总上二对角化耗时(ms): 7981.59
+总GKH迭代耗时(ms): 31966.6
+通过: 5 / 5
+
+Authorized users only. All activities may be monitored and reported.
+[s2412456@master_ubss1 svd]$ cat test.o*
+=== 固定值 5x5 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 3.87116e-12
+  relative recon error      : 2.76702e-13
+  ||U^T U-I||_F             : 1.55583e-15
+  ||V^T V-I||_F             : 1.42322e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 0.01075
+  time gkh iteration(ms)    : 0.03214
+  结果: PASS
+
+=== 随机 8x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.12327e-14
+  relative recon error      : 7.41499e-16
+  ||U^T U-I||_F             : 1.80321e-15
+  ||V^T V-I||_F             : 1.52765e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 0.00999
+  time gkh iteration(ms)    : 0.01554
+  结果: PASS
+
+=== 近秩亏损 10x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 2.09799e-13
+  relative recon error      : 1.94571e-14
+  ||U^T U-I||_F             : 2.46675e-15
+  ||V^T V-I||_F             : 2.23351e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 0.01041
+  time gkh iteration(ms)    : 0.01767
+  结果: PASS
+
+=== 随机 10x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.32266e-11
+  relative recon error      : 6.32491e-13
+  ||U^T U-I||_F             : 2.43461e-15
+  ||V^T V-I||_F             : 1.83272e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 0.00688
+  time gkh iteration(ms)    : 0.01493
+  结果: PASS
+
+=== 随机 1000x1000 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.84725e-10
+  relative recon error      : 3.19182e-13
+  ||U^T U-I||_F             : 2.38363e-13
+  ||V^T V-I||_F             : 2.37297e-13
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 7981.55
+  time gkh iteration(ms)    : 31966.6
+  结果: PASS
+
+==============================
+随机种子基值: 20260409
+总上二对角化耗时(ms): 7981.59
+总GKH迭代耗时(ms): 31966.6
+通过: 5 / 5
+
+Authorized users only. All activities may be monitored and reported.
