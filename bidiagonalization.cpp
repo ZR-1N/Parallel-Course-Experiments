@@ -92,23 +92,9 @@ Matrix to_bidiagonal(const Matrix &A, Matrix &U, Matrix &V)
                 for (int j = 0; j < n - k; ++j)
                     for (int i = 0; i < m - k; ++i)
                         w[j] += v[i] * B.at(k + i, k + j);
-                // 指针 + 循环展开版本
                 for (int i = 0; i < m - k; ++i)
-                {
-                    double* B_row = &B.at(k + i, k);
-                    double vi_beta = beta * v[i];
-
-                    int j = 0;
-                    for (; j + 3 < n - k; j += 4)
-                    {
-                        B_row[j]     -= vi_beta * w[j];
-                        B_row[j + 1] -= vi_beta * w[j + 1];
-                        B_row[j + 2] -= vi_beta * w[j + 2];
-                        B_row[j + 3] -= vi_beta * w[j + 3];
-                    }
-                    for (; j < n - k; ++j)
-                        B_row[j] -= vi_beta * w[j];
-                }
+                    for (int j = 0; j < n - k; ++j)
+                        B.at(k + i, k + j) -= beta * v[i] * w[j];
 
                 // 累积 U：U_new = U_old * H_k
                 // U[:, k:m] -= beta * (U[:, k:m] * v) * v^T
@@ -117,21 +103,8 @@ Matrix to_bidiagonal(const Matrix &A, Matrix &U, Matrix &V)
                     for (int j = 0; j < m - k; ++j)
                         wU[i] += U.at(i, k + j) * v[j];
                 for (int i = 0; i < m; ++i)
-                {
-                    double* U_row = &U.at(i, k);
-                    double wU_i_beta = beta * wU[i];
-
-                    int j = 0;
-                    for (; j + 3 < m - k; j += 4)
-                    {
-                        U_row[j]     -= wU_i_beta * v[j];
-                        U_row[j + 1] -= wU_i_beta * v[j + 1];
-                        U_row[j + 2] -= wU_i_beta * v[j + 2];
-                        U_row[j + 3] -= wU_i_beta * v[j + 3];
-                    }
-                    for (; j < m - k; ++j)
-                        U_row[j] -= wU_i_beta * v[j];
-                }
+                    for (int j = 0; j < m - k; ++j)
+                        U.at(i, k + j) -= beta * wU[i] * v[j];
             }
         }
 
@@ -183,21 +156,8 @@ Matrix to_bidiagonal(const Matrix &A, Matrix &U, Matrix &V)
                         for (int j = 0; j < n - k - 1; ++j)
                             w[i] += B.at(k + i, k + 1 + j) * v[j];
                     for (int i = 0; i < m - k; ++i)
-                {
-                    double* B_row = &B.at(k + i, k + 1);
-                    double wi_beta = beta * w[i];
-
-                    int j = 0;
-                    for (; j + 3 < n - k - 1; j += 4)
-                    {
-                        B_row[j]     -= wi_beta * v[j];
-                        B_row[j + 1] -= wi_beta * v[j + 1];
-                        B_row[j + 2] -= wi_beta * v[j + 2];
-                        B_row[j + 3] -= wi_beta * v[j + 3];
-                    }
-                    for (; j < n - k - 1; ++j)
-                        B_row[j] -= wi_beta * v[j];
-                }
+                        for (int j = 0; j < n - k - 1; ++j)
+                            B.at(k + i, k + 1 + j) -= beta * w[i] * v[j];
 
                     // 累积 V：V_new = V_old * V_k
                     // V[:, k+1:n] -= beta * (V[:, k+1:n] * v) * v^T
@@ -206,21 +166,8 @@ Matrix to_bidiagonal(const Matrix &A, Matrix &U, Matrix &V)
                         for (int j = 0; j < n - k - 1; ++j)
                             wV[i] += V.at(i, k + 1 + j) * v[j];
                     for (int i = 0; i < n; ++i)
-                    {
-                        double* V_row = &V.at(i, k + 1);
-                        double wV_i_beta = beta * wV[i];
-
-                        int j = 0;
-                        for (; j + 3 < n - k - 1; j += 4)
-                        {
-                            V_row[j]     -= wV_i_beta * v[j];
-                            V_row[j + 1] -= wV_i_beta * v[j + 1];
-                            V_row[j + 2] -= wV_i_beta * v[j + 2];
-                            V_row[j + 3] -= wV_i_beta * v[j + 3];
-                        }
-                        for (; j < n - k - 1; ++j)
-                            V_row[j] -= wV_i_beta * v[j];
-                    }
+                        for (int j = 0; j < n - k - 1; ++j)
+                            V.at(i, k + 1 + j) -= beta * wV[i] * v[j];
                 }
             }
 
