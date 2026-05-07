@@ -21,7 +21,70 @@
 #include <stdexcept>
 #include <vector>
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 // 辅助函数，计算向量的范数（平方和开根）
+static double dot_product_contiguous(const double *a, const double *b, int n)
+{
+    double sum = 0.0;
+
+#if defined(__aarch64__)
+    float64x2_t vsum = vdupq_n_f64(0.0);
+
+    int i = 0;
+    for (; i + 1 < n; i += 2)
+    {
+        const float64x2_t va = vld1q_f64(a + i);
+        const float64x2_t vb = vld1q_f64(b + i);
+        vsum = vaddq_f64(vsum, vmulq_f64(va, vb));
+    }
+
+    double tmp[2];
+    vst1q_f64(tmp, vsum);
+    sum = tmp[0] + tmp[1];
+
+    for (; i < n; ++i)
+    {
+        sum += a[i] * b[i];
+    }
+#else
+    for (int i = 0; i < n; ++i)
+    {
+        sum += a[i] * b[i];
+    }
+#endif
+
+    return sum;
+}
+
+static void add_scaled_contiguous(double *dst, const double *src, double alpha, int n)
+{
+#if defined(__aarch64__)
+    const float64x2_t valpha = vdupq_n_f64(alpha);
+
+    int i = 0;
+    for (; i + 1 < n; i += 2)
+    {
+        const float64x2_t vdst = vld1q_f64(dst + i);
+        const float64x2_t vsrc = vld1q_f64(src + i);
+        const float64x2_t vres = vaddq_f64(vdst, vmulq_f64(valpha, vsrc));
+        vst1q_f64(dst + i, vres);
+    }
+
+    for (; i < n; ++i)
+    {
+        dst[i] += alpha * src[i];
+    }
+#else
+    for (int i = 0; i < n; ++i)
+    {
+        dst[i] += alpha * src[i];
+    }
+#endif
+}
+
 static double vector_norm(const std::vector<double> &v)
 {
     double sum = 0.0;
@@ -77,9 +140,7 @@ Matrix to_bidiagonal(const Matrix &A, Matrix &U, Matrix &V)
             v[0] += sigma; // v = x + sigma * e_1
 
             // 计算 v^T v
-            double vTv = 0.0;
-            for (double vi : v)
-                vTv += vi * vi;
+            double vTv = dot_product_contiguous(v.data(), v.data(), static_cast<int>(v.size()));
 
             // TODO(SIMD编程)：此处的Householder变换可以通过 SIMD 指令加速，你可以尝试实现
             if (vTv > 1e-28)
@@ -89,24 +150,37 @@ Matrix to_bidiagonal(const Matrix &A, Matrix &U, Matrix &V)
                 // 手册里的 Householder 矩阵定义为 H = I - beta * v * v^T，其中 beta = 2 / (v^T v)
                 // 从左侧作用 H：B_new = H * B_old = B_old - beta * v * (v^T * B_old)
                 std::vector<double> w(n - k, 0.0);
-                for (int j = 0; j < n - k; ++j)
-                    for (int i = 0; i < m - k; ++i)
-                        w[j] += v[i] * B.at(k + i, k + j);
+
+                // 将原本按列访问 B 的计算重排为按行连续访问：
+                // w += v[i] * B[k+i][k:n]
                 for (int i = 0; i < m - k; ++i)
-                    for (int j = 0; j < n - k; ++j)
-                        B.at(k + i, k + j) -= beta * v[i] * w[j];
+                {
+                    const double *brow = &B.at(k + i, k);
+                    add_scaled_contiguous(w.data(), brow, v[i], n - k);
+                }
+
+                for (int i = 0; i < m - k; ++i)
+                {
+                    double *brow = &B.at(k + i, k);
+                    add_scaled_contiguous(brow, w.data(), -beta * v[i], n - k);
+                }
 
                 // 累积 U：U_new = U_old * H_k
                 // U[:, k:m] -= beta * (U[:, k:m] * v) * v^T
                 std::vector<double> wU(m, 0.0);
                 for (int i = 0; i < m; ++i)
-                    for (int j = 0; j < m - k; ++j)
-                        wU[i] += U.at(i, k + j) * v[j];
+                {
+                    const double *urow = &U.at(i, k);
+                    wU[i] = dot_product_contiguous(urow, v.data(), m - k);
+                }
+
                 for (int i = 0; i < m; ++i)
-                    for (int j = 0; j < m - k; ++j)
-                        U.at(i, k + j) -= beta * wU[i] * v[j];
+                {
+                    double *urow = &U.at(i, k);
+                    add_scaled_contiguous(urow, v.data(), -beta * wU[i], m - k);
+                }
             }
-        }
+}
 
         // 清除第 k 列中对角线以下的元素
         // 理论上应为 0，但不能完全保证全是 0，这里强制置零
@@ -140,34 +214,43 @@ Matrix to_bidiagonal(const Matrix &A, Matrix &U, Matrix &V)
                 std::vector<double> v(y);
                 v[0] += sigma;
 
-                double vTv = 0.0;
-                for (double vi : v)
-                    vTv += vi * vi;
+                double vTv = dot_product_contiguous(v.data(), v.data(), static_cast<int>(v.size()));
 
                 // TODO(SIMD编程)：此处的Householder变换可以通过 SIMD 指令加速，你可以尝试实现
                 if (vTv > 1e-28)
                 {
                     const double beta = 2.0 / vTv;
+                    const int len = n - k - 1;
 
                     // 注意：这里是从右侧作用 V_k
                     // B_new = B_old * V_k = B_old - beta * (B_old * v) * v^T
                     std::vector<double> w(m - k, 0.0);
                     for (int i = 0; i < m - k; ++i)
-                        for (int j = 0; j < n - k - 1; ++j)
-                            w[i] += B.at(k + i, k + 1 + j) * v[j];
+                    {
+                        const double *brow = &B.at(k + i, k + 1);
+                        w[i] = dot_product_contiguous(brow, v.data(), len);
+                    }
+
                     for (int i = 0; i < m - k; ++i)
-                        for (int j = 0; j < n - k - 1; ++j)
-                            B.at(k + i, k + 1 + j) -= beta * w[i] * v[j];
+                    {
+                        double *brow = &B.at(k + i, k + 1);
+                        add_scaled_contiguous(brow, v.data(), -beta * w[i], len);
+                    }
 
                     // 累积 V：V_new = V_old * V_k
                     // V[:, k+1:n] -= beta * (V[:, k+1:n] * v) * v^T
                     std::vector<double> wV(n, 0.0);
                     for (int i = 0; i < n; ++i)
-                        for (int j = 0; j < n - k - 1; ++j)
-                            wV[i] += V.at(i, k + 1 + j) * v[j];
+                    {
+                        const double *vrow = &V.at(i, k + 1);
+                        wV[i] = dot_product_contiguous(vrow, v.data(), len);
+                    }
+
                     for (int i = 0; i < n; ++i)
-                        for (int j = 0; j < n - k - 1; ++j)
-                            V.at(i, k + 1 + j) -= beta * wV[i] * v[j];
+                    {
+                        double *vrow = &V.at(i, k + 1);
+                        add_scaled_contiguous(vrow, v.data(), -beta * wV[i], len);
+                    }
                 }
             }
 
