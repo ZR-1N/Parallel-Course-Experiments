@@ -22,35 +22,15 @@ namespace
     // 即 M <- L * M，其中 L 只作用在第 r0/r1 两行上。
     // 这类逐元素线性组合很适合向量化，SIMD/多线程中你也可以顺手的事把他们做了。
     static void apply_left_rows(Matrix &M, int r0, int r1, double c, double s)
-{
-    int n = M.cols();
-    double* row0 = &M.at(r0, 0);
-    double* row1 = &M.at(r1, 0);
-
-    int j = 0;
-    // 手动展开4次
-    for (; j + 3 < n; j += 4)
     {
-        double a0 = row0[j], b0 = row1[j];
-        double a1 = row0[j + 1], b1 = row1[j + 1];
-        double a2 = row0[j + 2], b2 = row1[j + 2];
-        double a3 = row0[j + 3], b3 = row1[j + 3];
-
-        row0[j]     = c * a0 + s * b0; row1[j]     = -s * a0 + c * b0;
-        row0[j + 1] = c * a1 + s * b1; row1[j + 1] = -s * a1 + c * b1;
-        row0[j + 2] = c * a2 + s * b2; row1[j + 2] = -s * a2 + c * b2;
-        row0[j + 3] = c * a3 + s * b3; row1[j + 3] = -s * a3 + c * b3;
+        for (int j = 0; j < M.cols(); ++j)
+        {
+            double a = M.at(r0, j);
+            double b = M.at(r1, j);
+            M.at(r0, j) = c * a + s * b;
+            M.at(r1, j) = -s * a + c * b;
+        }
     }
-
-    // 处理尾部
-    for (; j < n; ++j)
-    {
-        double a = row0[j];
-        double b = row1[j];
-        row0[j] = c * a + s * b;
-        row1[j] = -s * a + c * b;
-    }
-}
 
     // 对矩阵 M 的两列 c0, c1 右乘 Givens 旋转 [c s; -s c]。
     // 即 M <- M * R，其中 R 只作用在第 c0/c1 两列上。
