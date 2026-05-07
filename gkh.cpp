@@ -6,6 +6,9 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#if defined(__aarch64__) || defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace
 {
@@ -23,20 +26,85 @@ namespace
     // 这类逐元素线性组合很适合向量化，SIMD/多线程中你也可以顺手的事把他们做了。
     static void apply_left_rows(Matrix &M, int r0, int r1, double c, double s)
     {
-        for (int j = 0; j < M.cols(); ++j)
+        const int cols = M.cols();
+
+    #if defined(__aarch64__) || defined(__ARM_NEON)
+        double *row0 = &M.at(r0, 0);
+        double *row1 = &M.at(r1, 0);
+
+        const float64x2_t vc = vdupq_n_f64(c);
+        const float64x2_t vs = vdupq_n_f64(s);
+        const float64x2_t vns = vdupq_n_f64(-s);
+
+        int j = 0;
+        for (; j + 1 < cols; j += 2)
+        {
+            const float64x2_t va = vld1q_f64(row0 + j);
+            const float64x2_t vb = vld1q_f64(row1 + j);
+
+            const float64x2_t new0 = vaddq_f64(vmulq_f64(vc, va), vmulq_f64(vs, vb));
+            const float64x2_t new1 = vaddq_f64(vmulq_f64(vns, va), vmulq_f64(vc, vb));
+
+            vst1q_f64(row0 + j, new0);
+            vst1q_f64(row1 + j, new1);
+        }
+
+        for (; j < cols; ++j)
+        {
+            const double a = row0[j];
+            const double b = row1[j];
+            row0[j] = c * a + s * b;
+            row1[j] = -s * a + c * b;
+        }
+    #else
+        for (int j = 0; j < cols; ++j)
         {
             double a = M.at(r0, j);
             double b = M.at(r1, j);
             M.at(r0, j) = c * a + s * b;
             M.at(r1, j) = -s * a + c * b;
         }
+    #endif
     }
 
     // 对矩阵 M 的两列 c0, c1 右乘 Givens 旋转 [c s; -s c]。
     // 即 M <- M * R，其中 R 只作用在第 c0/c1 两列上。
     static void apply_right_cols(Matrix &M, int c0, int c1, double c, double s)
     {
-        for (int i = 0; i < M.rows(); ++i)
+        const int rows = M.rows();
+
+    #if defined(__aarch64__) || defined(__ARM_NEON)
+    // GKH 中通常对相邻两列做 Givens 旋转。
+    // 若不是相邻列，则回退到标量版本，保证语义正确。
+        if (c1 == c0 + 1)
+        {
+            const float64x2_t vc = vdupq_n_f64(c);
+
+            float64x2_t vcoeff = vdupq_n_f64(-s);
+            vcoeff = vsetq_lane_f64(s, vcoeff, 1);  // [-s, s]
+
+            for (int i = 0; i < rows; ++i)
+            {
+                double *p = &M.at(i, c0);
+
+                // ab = [a, b]
+                const float64x2_t ab = vld1q_f64(p);
+
+                // swapped = [b, a]
+                const float64x2_t swapped = vextq_f64(ab, ab, 1);
+
+                // [a, b] * [c, c] + [b, a] * [-s, s]
+                // = [a*c - b*s, b*c + a*s]
+                const float64x2_t result =
+                    vaddq_f64(vmulq_f64(ab, vc), vmulq_f64(swapped, vcoeff));
+
+                vst1q_f64(p, result);
+            }
+            return;
+        }
+    #endif
+
+        for (int i = 0; i < rows; ++i)
         {
             double a = M.at(i, c0);
             double b = M.at(i, c1);
