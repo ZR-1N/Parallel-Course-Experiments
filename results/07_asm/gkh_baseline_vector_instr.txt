@@ -1,0 +1,15 @@
+28:	fmul	d3, d2, d1
+29:	fmul	d2, d2, d0
+63:	fmul	d3, d2, d1
+64:	fmul	d2, d2, d0
+848:	fmul	d13, d8, d10
+889:	fadd	d0, d0, d2
+890:	fadd	d0, d0, d3
+891:	fmul	d0, d0, d8
+989:	fmul	d1, d1, d1
+991:	fmul	d3, d2, d2
+994:	fmul	d0, d0, d2
+995:	fmul	d0, d0, d0
+996:	fadd	d13, d1, d11
+998:	fmul	d1, d13, d12
+1031:	fmul	d13, d2, d13

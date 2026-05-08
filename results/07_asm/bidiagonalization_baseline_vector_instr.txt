@@ -1,0 +1,8 @@
+372:	fadd	d0, d8, d0
+564:	fadd	d0, d8, d0
+676:	fmul	d1, d8, d1
+746:	fmul	d1, d8, d1
+855:	fmul	d1, d8, d1
+929:	fmul	d1, d8, d1
+971:	fadd	d0, d0, d8
+986:	fadd	d0, d0, d8
