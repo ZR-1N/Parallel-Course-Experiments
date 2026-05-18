@@ -2,7 +2,12 @@
 
 #include "givens.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -17,6 +22,43 @@ namespace
         int l;
         int r;
     };
+    static double now_ms()
+    {
+        using clock = std::chrono::steady_clock;
+        return std::chrono::duration<double, std::milli>(
+                   clock::now().time_since_epoch())
+            .count();
+    }
+
+    struct GKHProfile
+    {
+        double cleanup_ms = 0.0;
+        double zero_ms = 0.0;
+        double split_ms = 0.0;
+        double block_ms = 0.0;
+        double final_ms = 0.0;
+        double total_ms = 0.0;
+
+        long long iter_count = 0;
+        long long total_blocks = 0;
+        long long total_nontrivial_blocks = 0;
+        long long total_block_size = 0;
+        int max_block_size_seen = 0;
+    };
+
+    static bool profile_enabled()
+    {
+#ifndef SVD_LAB3_PROFILE
+        return true;
+#else
+        return SVD_LAB3_PROFILE != 0;
+#endif
+    }
+
+    static void write_block_profile_header_if_needed(std::ofstream &ofs)
+    {
+        ofs << "iter,num_blocks,nontrivial_blocks,min_block_size,max_block_size,avg_block_size\n";
+    }
 
     // 对矩阵 M 的两行 r0, r1 左乘 Givens 旋转 [c s; -s c]。
     // 即 M <- L * M，其中 L 只作用在第 r0/r1 两行上。
@@ -346,28 +388,74 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         throw std::invalid_argument("gkh_svd_from_bidiagonal_v2: V must be n x n");
     }
 
+    GKHProfile profile;
+    const double total_t0 = now_ms();
+
+    std::ofstream block_log;
+    const char *block_log_path = std::getenv("SVD_LAB3_BLOCK_LOG");
+    if (block_log_path != nullptr && block_log_path[0] != '\0')
+    {
+        block_log.open(block_log_path);
+        if (block_log.is_open())
+        {
+            write_block_profile_header_if_needed(block_log);
+        }
+    }
+
     bool converged = false;
 
     for (int iter = 0; iter < max_iter; ++iter)
     {
-        // 清理数值噪声，并优先处理 d_k≈0 的特殊情形。
+        profile.iter_count++;
+
+        double t0 = now_ms();
         cleanup_bidiagonal(B, tol);
+        profile.cleanup_ms += now_ms() - t0;
+
+        t0 = now_ms();
         handle_diagonal_zeros(U, B, V, tol);
+        profile.zero_ms += now_ms() - t0;
 
-        // 根据超对角线断点拆分活动块
-        // 这里子矩阵间是相互独立的，所以此处具有很大的并行潜力：你可以尝试多线程/多进程进行处理
-        // 但根据算法，收集 Givens 旋转并更新 U/V 需要在每个块内顺序执行，所以这可能给并行带来麻烦。
+        t0 = now_ms();
         std::vector<Block> blocks = split_active_blocks(B, n, tol);
+        profile.split_ms += now_ms() - t0;
 
-        // 若全部是 1x1 块，说明所有超对角都已收敛为 0。
+        int nontrivial_blocks = 0;
+        int min_block_size = n > 0 ? n : 0;
+        int max_block_size = 0;
+        long long block_size_sum = 0;
+
         bool all_singletons = true;
         for (const auto &blk : blocks)
         {
+            const int block_size = blk.r - blk.l + 1;
+            min_block_size = std::min(min_block_size, block_size);
+            max_block_size = std::max(max_block_size, block_size);
+            block_size_sum += block_size;
+
             if (blk.r > blk.l)
             {
                 all_singletons = false;
-                break;
+                nontrivial_blocks++;
             }
+        }
+
+        profile.total_blocks += static_cast<long long>(blocks.size());
+        profile.total_nontrivial_blocks += nontrivial_blocks;
+        profile.total_block_size += block_size_sum;
+        profile.max_block_size_seen = std::max(profile.max_block_size_seen, max_block_size);
+
+        if (block_log.is_open())
+        {
+            const double avg_block_size =
+                blocks.empty() ? 0.0 : static_cast<double>(block_size_sum) / static_cast<double>(blocks.size());
+
+            block_log << iter << ","
+                      << blocks.size() << ","
+                      << nontrivial_blocks << ","
+                      << min_block_size << ","
+                      << max_block_size << ","
+                      << std::setprecision(10) << avg_block_size << "\n";
         }
 
         if (all_singletons)
@@ -376,7 +464,7 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
             break;
         }
 
-        // 从右到左处理每个非平凡块，减少末端块对前面块的干扰。
+        t0 = now_ms();
         for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i)
         {
             if (blocks[i].r > blocks[i].l)
@@ -384,15 +472,43 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
                 one_block_step(U, B, V, blocks[i].l, blocks[i].r);
             }
         }
+        profile.block_ms += now_ms() - t0;
     }
 
-    // 迭代结束后统一结构清理与标准化输出。
+    double t0 = now_ms();
     cleanup_bidiagonal(B, tol);
     for (int i = 0; i < n - 1; ++i)
     {
         B.at(i, i + 1) = 0.0;
     }
     make_nonnegative_and_sort(U, B, V);
+    profile.final_ms += now_ms() - t0;
+
+    profile.total_ms = now_ms() - total_t0;
+
+    if (profile_enabled())
+    {
+        std::cerr << std::fixed << std::setprecision(3)
+                  << "[lab3_gkh_profile] "
+                  << "m=" << m << " "
+                  << "n=" << n << " "
+                  << "converged=" << (converged ? "yes" : "no") << " "
+                  << "iters=" << profile.iter_count << " "
+                  << "cleanup_ms=" << profile.cleanup_ms << " "
+                  << "zero_ms=" << profile.zero_ms << " "
+                  << "split_ms=" << profile.split_ms << " "
+                  << "block_ms=" << profile.block_ms << " "
+                  << "final_ms=" << profile.final_ms << " "
+                  << "total_ms=" << profile.total_ms << " "
+                  << "total_blocks=" << profile.total_blocks << " "
+                  << "nontrivial_blocks=" << profile.total_nontrivial_blocks << " "
+                  << "max_block_size=" << profile.max_block_size_seen << " "
+                  << "avg_nontrivial_blocks_per_iter="
+                  << (profile.iter_count == 0 ? 0.0
+                                              : static_cast<double>(profile.total_nontrivial_blocks) /
+                                                    static_cast<double>(profile.iter_count))
+                  << std::endl;
+    }
 
     return converged;
 }
