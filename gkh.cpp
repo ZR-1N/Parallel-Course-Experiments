@@ -55,10 +55,6 @@ namespace
 #endif
     }
 
-    static void write_block_profile_header_if_needed(std::ofstream &ofs)
-    {
-        ofs << "iter,num_blocks,nontrivial_blocks,min_block_size,max_block_size,avg_block_size\n";
-    }
 
     // 对矩阵 M 的两行 r0, r1 左乘 Givens 旋转 [c s; -s c]。
     // 即 M <- L * M，其中 L 只作用在第 r0/r1 两行上。
@@ -391,15 +387,13 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
     GKHProfile profile;
     const double total_t0 = now_ms();
 
-    std::ofstream block_log;
-    const char *block_log_path = std::getenv("SVD_LAB3_BLOCK_LOG");
-    if (block_log_path != nullptr && block_log_path[0] != '\0')
+    const bool emit_block_csv_to_stderr = (m >= 1000 && n >= 1000);
+
+    if (emit_block_csv_to_stderr)
     {
-        block_log.open(block_log_path);
-        if (block_log.is_open())
-        {
-            write_block_profile_header_if_needed(block_log);
-        }
+        std::cerr << "[lab3_block_csv] "
+                  << "m,n,iter,num_blocks,nontrivial_blocks,min_block_size,max_block_size,avg_block_size"
+                  << std::endl;
     }
 
     bool converged = false;
@@ -445,17 +439,20 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         profile.total_block_size += block_size_sum;
         profile.max_block_size_seen = std::max(profile.max_block_size_seen, max_block_size);
 
-        if (block_log.is_open())
+        if (emit_block_csv_to_stderr)
         {
             const double avg_block_size =
                 blocks.empty() ? 0.0 : static_cast<double>(block_size_sum) / static_cast<double>(blocks.size());
 
-            block_log << iter << ","
+            std::cerr << "[lab3_block_csv] "
+                      << m << ","
+                      << n << ","
+                      << iter << ","
                       << blocks.size() << ","
                       << nontrivial_blocks << ","
                       << min_block_size << ","
                       << max_block_size << ","
-                      << std::setprecision(10) << avg_block_size << "\n";
+                      << std::setprecision(10) << avg_block_size << std::endl;
         }
 
         if (all_singletons)

@@ -55,3 +55,34 @@ Important findings:
    Therefore, simple block-level parallelism may have limited speedup and may even suffer from scheduling overhead.
 
 4. These data will be used later to explain the performance of OpenMP and Pthread versions.
+
+Block Evolution CSV via stderr
+==============================
+
+Problem:
+Writing lab3_block_profile.csv on the compute node did not leave the file in the login-node working directory after qsub execution.
+
+Solution:
+The block evolution records were emitted to stderr with the prefix:
+[lab3_block_csv]
+
+Extraction command:
+grep "^\[lab3_block_csv\]" test.e | sed 's/^\[lab3_block_csv\] //' > results_lab3/07_block_profile/block_profile_serial_O2_seed20260409.csv
+
+CSV columns:
+m,n,iter,num_blocks,nontrivial_blocks,min_block_size,max_block_size,avg_block_size
+
+Archived CSV:
+results_lab3/07_block_profile/block_profile_serial_O2_seed20260409.csv
+
+Non-trivial block count distribution for the 1000x1000 case:
+0 1
+1 1410
+2 12
+4 2
+
+Interpretation:
+The 1000x1000 GKH iteration has very limited block-level parallelism.
+Among 1425 iterations, 1410 iterations have only one non-trivial active block.
+Therefore, simple block-level parallelism over split_active_blocks may have limited speedup.
+This result will be used later to explain the performance of OpenMP and Pthread block-level parallelization.
