@@ -12,8 +12,21 @@
 #include <stdexcept>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace
 {
+#ifndef SVD_PARALLEL_MODE
+#define SVD_PARALLEL_MODE 0
+#endif
+
+// SVD_PARALLEL_MODE:
+// 0 = serial block processing
+// 1 = OpenMP static block processing
+// 2 = OpenMP dynamic block processing, chunk size = 1
+// 3 = OpenMP guided block processing, chunk size = 1    
 
     // 活动块 [l, r]（闭区间）表示一个尚未完全收敛的上二对角子问题。
     // 在该区间内，超对角线元素非零，你可以认为通过这个抽象结构给矩阵“分块”。
@@ -54,6 +67,14 @@ namespace
         return SVD_LAB3_PROFILE != 0;
 #endif
     }
+    static bool block_csv_enabled()
+{
+#ifndef SVD_LAB3_EMIT_BLOCK_CSV
+    return false;
+#else
+    return SVD_LAB3_EMIT_BLOCK_CSV != 0;
+#endif
+}
 
 
     // 对矩阵 M 的两行 r0, r1 左乘 Givens 旋转 [c s; -s c]。
@@ -387,7 +408,7 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
     GKHProfile profile;
     const double total_t0 = now_ms();
 
-    const bool emit_block_csv_to_stderr = (m >= 1000 && n >= 1000);
+    const bool emit_block_csv_to_stderr = block_csv_enabled() && (m >= 1000 && n >= 1000);
 
     if (emit_block_csv_to_stderr)
     {
@@ -461,14 +482,44 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
             break;
         }
 
-        t0 = now_ms();
+                std::vector<Block> tasks;
+        tasks.reserve(blocks.size());
+
         for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i)
         {
             if (blocks[i].r > blocks[i].l)
             {
-                one_block_step(U, B, V, blocks[i].l, blocks[i].r);
+                tasks.push_back(blocks[i]);
             }
         }
+
+        t0 = now_ms();
+
+#if SVD_PARALLEL_MODE == 1
+#pragma omp parallel for schedule(static)
+        for (int task_id = 0; task_id < static_cast<int>(tasks.size()); ++task_id)
+        {
+            one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+        }
+#elif SVD_PARALLEL_MODE == 2
+#pragma omp parallel for schedule(dynamic, 1)
+        for (int task_id = 0; task_id < static_cast<int>(tasks.size()); ++task_id)
+        {
+            one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+        }
+#elif SVD_PARALLEL_MODE == 3
+#pragma omp parallel for schedule(guided, 1)
+        for (int task_id = 0; task_id < static_cast<int>(tasks.size()); ++task_id)
+        {
+            one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+        }
+#else
+        for (int task_id = 0; task_id < static_cast<int>(tasks.size()); ++task_id)
+        {
+            one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+        }
+#endif
+
         profile.block_ms += now_ms() - t0;
     }
 
