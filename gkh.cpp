@@ -21,15 +21,27 @@
 namespace
 {
 #ifndef SVD_PARALLEL_MODE
-#define SVD_PARALLEL_MODE 5
+#define SVD_PARALLEL_MODE 3
 #endif
 
 #ifndef SVD_NUM_THREADS
 #define SVD_NUM_THREADS 8
 #endif
+static int get_svd_num_threads()
+{
+    return SVD_NUM_THREADS;
+}
 
 #ifndef SVD_MIN_PARALLEL_TASKS
 #define SVD_MIN_PARALLEL_TASKS 2
+#endif
+
+#ifndef SVD_PARALLEL_CLEANUP
+#define SVD_PARALLEL_CLEANUP 1
+#endif
+
+#ifndef SVD_CLEANUP_MIN_ELEMENTS
+#define SVD_CLEANUP_MIN_ELEMENTS 4096
 #endif
 
 // SVD_PARALLEL_MODE:
@@ -261,6 +273,47 @@ namespace
             }
         }
     }
+    static void cleanup_bidiagonal_parallel_openmp(Matrix &B, double tol)
+{
+    const int rows = B.rows();
+    const int cols = B.cols();
+    const int total = rows * cols;
+
+#ifndef _OPENMP
+    cleanup_bidiagonal(B, tol);
+    return;
+#else
+    // 小矩阵直接串行，避免每轮调用 OpenMP runtime 带来的固定开销。
+    if (total < SVD_CLEANUP_MIN_ELEMENTS)
+    {
+        cleanup_bidiagonal(B, tol);
+        return;
+    }
+
+    omp_set_num_threads(get_svd_num_threads());
+
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < rows; ++i)
+    {
+        for (int j = 0; j < cols; ++j)
+        {
+            if (j != i && j != i + 1 && std::fabs(B.at(i, j)) <= tol)
+            {
+                B.at(i, j) = 0.0;
+            }
+        }
+    }
+#endif
+}
+
+    static void cleanup_bidiagonal_auto(Matrix &B, double tol)
+    {
+#if SVD_PARALLEL_CLEANUP
+        cleanup_bidiagonal_parallel_openmp(B, tol);
+#else
+        cleanup_bidiagonal(B, tol);
+#endif
+    }
 
     // 对活动块 [l, r] 执行一次“单块 GKH bulge chasing”迭代。
     // 流程：首次右乘引入 bulge -> 首次左乘消 bulge -> 交替右乘/左乘将 bulge 追赶到块末端。
@@ -339,7 +392,7 @@ namespace
             return;
         }
 
-        int thread_count = SVD_NUM_THREADS;
+        int thread_count = get_svd_num_threads();
         if (thread_count < 1)
         {
             thread_count = 1;
@@ -412,7 +465,7 @@ namespace
             return;
         }
 
-        int thread_count = SVD_NUM_THREADS;
+        int thread_count = get_svd_num_threads();
         if (thread_count < 1)
         {
             thread_count = 1;
@@ -655,7 +708,7 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         profile.iter_count++;
 
         double t0 = now_ms();
-        cleanup_bidiagonal(B, tol);
+        cleanup_bidiagonal_auto(B, tol);
         profile.cleanup_ms += now_ms() - t0;
 
         t0 = now_ms();
@@ -727,7 +780,7 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
 #ifdef _OPENMP
         if (SVD_PARALLEL_MODE >= 1 && SVD_PARALLEL_MODE <= 3)
         {
-            omp_set_num_threads(SVD_NUM_THREADS);
+            omp_set_num_threads(get_svd_num_threads());
         }
 #endif
 
@@ -819,7 +872,7 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
     }
 
     double t0 = now_ms();
-    cleanup_bidiagonal(B, tol);
+    cleanup_bidiagonal_auto(B, tol);
     for (int i = 0; i < n - 1; ++i)
     {
         B.at(i, i + 1) = 0.0;
@@ -846,6 +899,10 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
                   << "total_blocks=" << profile.total_blocks << " "
                   << "nontrivial_blocks=" << profile.total_nontrivial_blocks << " "
                   << "max_block_size=" << profile.max_block_size_seen << " "
+                  << "parallel_mode=" << SVD_PARALLEL_MODE << " "
+                  << "num_threads=" << get_svd_num_threads() << " "
+                  << "min_parallel_tasks=" << SVD_MIN_PARALLEL_TASKS << " "
+                  << "parallel_cleanup=" << SVD_PARALLEL_CLEANUP << " "
                   << "avg_nontrivial_blocks_per_iter="
                   << (profile.iter_count == 0 ? 0.0
                                               : static_cast<double>(profile.total_nontrivial_blocks) /
