@@ -11,6 +11,8 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <atomic>
+#include <pthread.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -19,7 +21,7 @@
 namespace
 {
 #ifndef SVD_PARALLEL_MODE
-#define SVD_PARALLEL_MODE 3
+#define SVD_PARALLEL_MODE 4
 #endif
 
 #ifndef SVD_NUM_THREADS
@@ -34,7 +36,8 @@ namespace
 // 0 = serial block processing
 // 1 = OpenMP static block processing
 // 2 = OpenMP dynamic block processing, chunk size = 1
-// 3 = OpenMP guided block processing, chunk size = 1    
+// 3 = OpenMP guided block processing, chunk size = 1
+// 4 = Pthread dynamic block processing with atomic task index
 
     // 活动块 [l, r]（闭区间）表示一个尚未完全收敛的上二对角子问题。
     // 在该区间内，超对角线元素非零，你可以认为通过这个抽象结构给矩阵“分块”。
@@ -295,6 +298,82 @@ namespace
             givens_rotation(B.at(k, k), B.at(k + 1, k), c, s, rr, true);
             apply_left_rows_range(B, k, k + 1, c, s, l, r);
             accumulate_left_into_U(U, k, k + 1, c, s);
+        }
+    }
+    struct PthreadBlockContext
+    {
+        Matrix *U = nullptr;
+        Matrix *B = nullptr;
+        Matrix *V = nullptr;
+        const std::vector<Block> *tasks = nullptr;
+        std::atomic<int> next_task;
+    };
+
+    static void *pthread_block_worker(void *arg)
+    {
+        PthreadBlockContext *ctx = static_cast<PthreadBlockContext *>(arg);
+        const int task_count = static_cast<int>(ctx->tasks->size());
+
+        while (true)
+        {
+            const int task_id = ctx->next_task.fetch_add(1, std::memory_order_relaxed);
+            if (task_id >= task_count)
+            {
+                break;
+            }
+
+            const Block &blk = (*(ctx->tasks))[task_id];
+            one_block_step(*(ctx->U), *(ctx->B), *(ctx->V), blk.l, blk.r);
+        }
+
+        return nullptr;
+    }
+
+    static void run_block_steps_pthread_dynamic(Matrix &U, Matrix &B, Matrix &V,
+                                                const std::vector<Block> &tasks)
+    {
+        const int task_count = static_cast<int>(tasks.size());
+        if (task_count <= 0)
+        {
+            return;
+        }
+
+        int thread_count = SVD_NUM_THREADS;
+        if (thread_count < 1)
+        {
+            thread_count = 1;
+        }
+        thread_count = std::min(thread_count, task_count);
+
+        if (thread_count <= 1)
+        {
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
+            return;
+        }
+
+        PthreadBlockContext ctx;
+        ctx.U = &U;
+        ctx.B = &B;
+        ctx.V = &V;
+        ctx.tasks = &tasks;
+        ctx.next_task.store(0, std::memory_order_relaxed);
+
+        std::vector<pthread_t> workers(thread_count - 1);
+
+        for (int i = 0; i < thread_count - 1; ++i)
+        {
+            pthread_create(&workers[i], nullptr, pthread_block_worker, &ctx);
+        }
+
+        // 主线程也作为 worker 参与任务计算，避免只创建线程后空等。
+        pthread_block_worker(&ctx);
+
+        for (int i = 0; i < thread_count - 1; ++i)
+        {
+            pthread_join(workers[i], nullptr);
         }
     }
 
@@ -619,6 +698,18 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
             {
                 one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
+        }
+        else
+        {
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
+        }
+#elif SVD_PARALLEL_MODE == 4
+        if (use_parallel_blocks)
+        {
+            run_block_steps_pthread_dynamic(U, B, V, tasks);
         }
         else
         {
