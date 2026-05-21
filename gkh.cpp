@@ -22,6 +22,11 @@ namespace
 #define SVD_PARALLEL_MODE 0
 #endif
 
+#ifndef SVD_NUM_THREADS
+#define SVD_NUM_THREADS 8
+#endif
+
+
 // SVD_PARALLEL_MODE:
 // 0 = serial block processing
 // 1 = OpenMP static block processing
@@ -110,12 +115,79 @@ namespace
         row1[j] = -s * a + c * b;
     }
 }
+    // 只在指定列区间 [col_l, col_r] 内对两行做左乘 Givens 旋转。
+    // 该函数主要用于并行 one_block_step 中对 B 的局部更新，避免不同 block 写入彼此区域。
+    static void apply_left_rows_range(Matrix &M, int r0, int r1, double c, double s,
+                                      int col_l, int col_r)
+    {
+        col_l = std::max(col_l, 0);
+        col_r = std::min(col_r, M.cols() - 1);
+
+        if (col_l > col_r)
+        {
+            return;
+        }
+
+        double *row0 = &M.at(r0, col_l);
+        double *row1 = &M.at(r1, col_l);
+        const int n = col_r - col_l + 1;
+
+        int j = 0;
+        for (; j + 3 < n; j += 4)
+        {
+            double a0 = row0[j], b0 = row1[j];
+            double a1 = row0[j + 1], b1 = row1[j + 1];
+            double a2 = row0[j + 2], b2 = row1[j + 2];
+            double a3 = row0[j + 3], b3 = row1[j + 3];
+
+            row0[j]     = c * a0 + s * b0;
+            row1[j]     = -s * a0 + c * b0;
+
+            row0[j + 1] = c * a1 + s * b1;
+            row1[j + 1] = -s * a1 + c * b1;
+
+            row0[j + 2] = c * a2 + s * b2;
+            row1[j + 2] = -s * a2 + c * b2;
+
+            row0[j + 3] = c * a3 + s * b3;
+            row1[j + 3] = -s * a3 + c * b3;
+        }
+
+        for (; j < n; ++j)
+        {
+            double a = row0[j];
+            double b = row1[j];
+            row0[j] = c * a + s * b;
+            row1[j] = -s * a + c * b;
+        }
+    }
 
     // 对矩阵 M 的两列 c0, c1 右乘 Givens 旋转 [c s; -s c]。
     // 即 M <- M * R，其中 R 只作用在第 c0/c1 两列上。
     static void apply_right_cols(Matrix &M, int c0, int c1, double c, double s)
     {
         for (int i = 0; i < M.rows(); ++i)
+        {
+            double a = M.at(i, c0);
+            double b = M.at(i, c1);
+            M.at(i, c0) = a * c - b * s;
+            M.at(i, c1) = a * s + b * c;
+        }
+    }
+        // 只在指定行区间 [row_l, row_r] 内对两列做右乘 Givens 旋转。
+    // 该函数主要用于并行 one_block_step 中对 B 的局部更新，避免不同 block 写入彼此区域。
+    static void apply_right_cols_range(Matrix &M, int c0, int c1, double c, double s,
+                                       int row_l, int row_r)
+    {
+        row_l = std::max(row_l, 0);
+        row_r = std::min(row_r, M.rows() - 1);
+
+        if (row_l > row_r)
+        {
+            return;
+        }
+
+        for (int i = row_l; i <= row_r; ++i)
         {
             double a = M.at(i, c0);
             double b = M.at(i, c1);
@@ -202,24 +274,23 @@ namespace
         const double x = B.at(l, l) * B.at(l, l) - mu;
         const double z = B.at(l, l) * B.at(l, l + 1);
         givens_rotation(x, z, c, s, rr, false);
-        apply_right_cols(B, l, l + 1, c, s);
+        apply_right_cols_range(B, l, l + 1, c, s, l, r);
         apply_right_cols(V, l, l + 1, c, s);
 
         // 首次左乘：消去 (l+1, l)。
         givens_rotation(B.at(l, l), B.at(l + 1, l), c, s, rr, true);
-        apply_left_rows(B, l, l + 1, c, s);
+        apply_left_rows_range(B, l, l + 1, c, s, l, r);
         accumulate_left_into_U(U, l, l + 1, c, s);
-
         for (int k = l + 1; k <= r - 1; ++k)
         {
             // 右乘：消去 (k-1, k+1)
             givens_rotation(B.at(k - 1, k), B.at(k - 1, k + 1), c, s, rr, false);
-            apply_right_cols(B, k, k + 1, c, s);
+            apply_right_cols_range(B, k, k + 1, c, s, l, r);
             apply_right_cols(V, k, k + 1, c, s);
 
             // 左乘：消去 (k+1, k)
             givens_rotation(B.at(k, k), B.at(k + 1, k), c, s, rr, true);
-            apply_left_rows(B, k, k + 1, c, s);
+            apply_left_rows_range(B, k, k + 1, c, s, l, r);
             accumulate_left_into_U(U, k, k + 1, c, s);
         }
     }
@@ -482,7 +553,7 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
             break;
         }
 
-                std::vector<Block> tasks;
+        std::vector<Block> tasks;
         tasks.reserve(blocks.size());
 
         for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i)
@@ -492,6 +563,13 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
                 tasks.push_back(blocks[i]);
             }
         }
+
+#ifdef _OPENMP
+        if (SVD_PARALLEL_MODE >= 1 && SVD_PARALLEL_MODE <= 3)
+        {
+            omp_set_num_threads(SVD_NUM_THREADS);
+        }
+#endif
 
         t0 = now_ms();
 
