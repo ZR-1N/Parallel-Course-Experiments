@@ -29,7 +29,16 @@ namespace
 #endif
 static int get_svd_num_threads()
 {
-    return SVD_NUM_THREADS;
+    int nthreads = SVD_NUM_THREADS;
+    if (nthreads < 1)
+    {
+        nthreads = 1;
+    }
+    if (nthreads > 8)
+    {
+        nthreads = 8;
+    }
+    return nthreads;
 }
 
 #ifndef SVD_MIN_PARALLEL_TASKS
