@@ -21,7 +21,7 @@
 namespace
 {
 #ifndef SVD_PARALLEL_MODE
-#define SVD_PARALLEL_MODE 4
+#define SVD_PARALLEL_MODE 5
 #endif
 
 #ifndef SVD_NUM_THREADS
@@ -38,6 +38,7 @@ namespace
 // 2 = OpenMP dynamic block processing, chunk size = 1
 // 3 = OpenMP guided block processing, chunk size = 1
 // 4 = Pthread dynamic block processing with atomic task index
+// 5 = Pthread static block processing with fixed task assignment
 
     // 活动块 [l, r]（闭区间）表示一个尚未完全收敛的上二对角子问题。
     // 在该区间内，超对角线元素非零，你可以认为通过这个抽象结构给矩阵“分块”。
@@ -376,6 +377,83 @@ namespace
             pthread_join(workers[i], nullptr);
         }
     }
+        struct PthreadStaticWorkerArg
+    {
+        Matrix *U = nullptr;
+        Matrix *B = nullptr;
+        Matrix *V = nullptr;
+        const std::vector<Block> *tasks = nullptr;
+        int thread_id = 0;
+        int thread_count = 1;
+    };
+
+    static void *pthread_block_worker_static(void *arg)
+    {
+        PthreadStaticWorkerArg *worker = static_cast<PthreadStaticWorkerArg *>(arg);
+        const int task_count = static_cast<int>(worker->tasks->size());
+
+        // 静态轮转分配：thread 0 处理 0, T, 2T...
+        // thread 1 处理 1, T+1, 2T+1...
+        for (int task_id = worker->thread_id; task_id < task_count; task_id += worker->thread_count)
+        {
+            const Block &blk = (*(worker->tasks))[task_id];
+            one_block_step(*(worker->U), *(worker->B), *(worker->V), blk.l, blk.r);
+        }
+
+        return nullptr;
+    }
+
+    static void run_block_steps_pthread_static(Matrix &U, Matrix &B, Matrix &V,
+                                               const std::vector<Block> &tasks)
+    {
+        const int task_count = static_cast<int>(tasks.size());
+        if (task_count <= 0)
+        {
+            return;
+        }
+
+        int thread_count = SVD_NUM_THREADS;
+        if (thread_count < 1)
+        {
+            thread_count = 1;
+        }
+        thread_count = std::min(thread_count, task_count);
+
+        if (thread_count <= 1)
+        {
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
+            return;
+        }
+
+        std::vector<pthread_t> workers(thread_count - 1);
+        std::vector<PthreadStaticWorkerArg> args(thread_count);
+
+        for (int tid = 0; tid < thread_count; ++tid)
+        {
+            args[tid].U = &U;
+            args[tid].B = &B;
+            args[tid].V = &V;
+            args[tid].tasks = &tasks;
+            args[tid].thread_id = tid;
+            args[tid].thread_count = thread_count;
+        }
+
+        for (int tid = 1; tid < thread_count; ++tid)
+        {
+            pthread_create(&workers[tid - 1], nullptr, pthread_block_worker_static, &args[tid]);
+        }
+
+        // 主线程负责 tid=0 的任务。
+        pthread_block_worker_static(&args[0]);
+
+        for (int tid = 1; tid < thread_count; ++tid)
+        {
+            pthread_join(workers[tid - 1], nullptr);
+        }
+    }
 
     // 处理“对角元 d_k 近零但超对角 e_k 未近零”的情况。
     // 思路与单块追赶类似：先右乘把 e_i 消掉，再左乘清理新引入的次对角 bulge，
@@ -710,6 +788,18 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         if (use_parallel_blocks)
         {
             run_block_steps_pthread_dynamic(U, B, V, tasks);
+        }
+        else
+        {
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
+        }
+#elif SVD_PARALLEL_MODE == 5
+        if (use_parallel_blocks)
+        {
+            run_block_steps_pthread_static(U, B, V, tasks);
         }
         else
         {
