@@ -19,7 +19,7 @@
 namespace
 {
 #ifndef SVD_PARALLEL_MODE
-#define SVD_PARALLEL_MODE 0
+#define SVD_PARALLEL_MODE 1
 #endif
 
 #ifndef SVD_NUM_THREADS
