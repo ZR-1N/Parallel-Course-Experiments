@@ -26,6 +26,9 @@ namespace
 #define SVD_NUM_THREADS 8
 #endif
 
+#ifndef SVD_MIN_PARALLEL_TASKS
+#define SVD_MIN_PARALLEL_TASKS 2
+#endif
 
 // SVD_PARALLEL_MODE:
 // 0 = serial block processing
@@ -571,28 +574,61 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         }
 #endif
 
+        const int task_count = static_cast<int>(tasks.size());
+        const bool use_parallel_blocks = task_count >= SVD_MIN_PARALLEL_TASKS;
+
         t0 = now_ms();
 
 #if SVD_PARALLEL_MODE == 1
-#pragma omp parallel for schedule(static)
-        for (int task_id = 0; task_id < static_cast<int>(tasks.size()); ++task_id)
+        if (use_parallel_blocks)
         {
-            one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+#pragma omp parallel for schedule(static)
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
+        }
+        else
+        {
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
         }
 #elif SVD_PARALLEL_MODE == 2
-#pragma omp parallel for schedule(dynamic, 1)
-        for (int task_id = 0; task_id < static_cast<int>(tasks.size()); ++task_id)
+        if (use_parallel_blocks)
         {
-            one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+#pragma omp parallel for schedule(dynamic, 1)
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
+        }
+        else
+        {
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
         }
 #elif SVD_PARALLEL_MODE == 3
-#pragma omp parallel for schedule(guided, 1)
-        for (int task_id = 0; task_id < static_cast<int>(tasks.size()); ++task_id)
+        if (use_parallel_blocks)
         {
-            one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+#pragma omp parallel for schedule(guided, 1)
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
+        }
+        else
+        {
+            for (int task_id = 0; task_id < task_count; ++task_id)
+            {
+                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            }
         }
 #else
-        for (int task_id = 0; task_id < static_cast<int>(tasks.size()); ++task_id)
+        for (int task_id = 0; task_id < task_count; ++task_id)
         {
             one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
         }
