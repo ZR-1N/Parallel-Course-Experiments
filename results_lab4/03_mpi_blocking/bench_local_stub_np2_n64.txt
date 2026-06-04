@@ -1,0 +1,9 @@
+[bench_mpi] local bench begin
+[bench_mpi] NP=2 MODE=bench IMPL=mpi_blocking N=64 SEED=20260408
+=== bench-rep-0 ===
+[bench] impl=mpi_blocking n=64 seed=20260408 converged=yes bidiag_ms=0.761171 gkh_ms=1692.9 recon_rel=6.50637e-14 orth_u=1.53996e-14 orth_v=1.40892e-14 diag_err=0 order_err=0 nonneg=yes dispatch_ms=0 worker_compute_ms=1692.85 merge_ms=0 mpi_total_ms=1692.87 tasks_sent=0 tasks_done=0
+==============================
+[bench-summary] impl=mpi_blocking n=64 repeat=1 avg_bidiag_ms=0.761171 avg_gkh_ms=1692.9 passed=1/1
+[lab3_gkh_profile] m=64 n=64 converged=yes iters=103 cleanup_ms=1678.058 zero_ms=0.113 split_ms=0.190 block_ms=2.671 final_ms=11.642 total_ms=1692.726 total_blocks=2953 nontrivial_blocks=102 max_block_size=64 parallel_mode=0 num_threads=8 min_parallel_tasks=2 parallel_cleanup=1 avg_nontrivial_blocks_per_iter=0.990
+[lab4_mpi_profile] impl=mpi_blocking_stub world_size=2 dispatch_ms=0.000 worker_compute_ms=1692.846 merge_ms=0.000 total_ms=1692.865 tasks_sent=0 tasks_done=0
+[bench_mpi] local bench done

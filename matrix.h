@@ -75,6 +75,17 @@ public:
             os << '\n';
         }
     }
+    int size() const { return static_cast<int>(data_.size()); }
+
+    double *raw_data() { return data_.data(); }
+    const double *raw_data() const { return data_.data(); }
+
+    void resize(int rows, int cols, double init = 0.0)
+    {
+        rows_ = rows;
+        cols_ = cols;
+        data_.assign(static_cast<size_t>(rows) * static_cast<size_t>(cols), init);
+    }
 
 private:
     int rows_, cols_;
