@@ -211,7 +211,60 @@ static int get_svd_num_threads()
             row[c1] = a * s + b * c;
         }
     }
-        // 只在指定行区间 [row_l, row_r] 内对两列做右乘 Givens 旋转。
+    #ifndef SVD_HYBRID_MIN_ROWS
+    #define SVD_HYBRID_MIN_ROWS 512
+    #endif
+
+        static void apply_right_cols_parallel(Matrix &M, int c0, int c1,
+                                            double c, double s,
+                                            int omp_threads)
+        {
+            const int rows = M.rows();
+            const int cols = M.cols();
+
+            if (rows <= 0 || cols <= 0)
+            {
+                return;
+            }
+
+            if (omp_threads < 1)
+            {
+                omp_threads = 1;
+            }
+
+    #ifndef _OPENMP
+            apply_right_cols(M, c0, c1, c, s);
+            return;
+    #else
+            if (omp_threads <= 1 || rows < SVD_HYBRID_MIN_ROWS)
+            {
+                apply_right_cols(M, c0, c1, c, s);
+                return;
+            }
+
+            double *base = &M.at(0, 0);
+
+    #pragma omp parallel for schedule(static) num_threads(omp_threads)
+            for (int i = 0; i < rows; ++i)
+            {
+                double *row = base + static_cast<size_t>(i) * cols;
+                const double a = row[c0];
+                const double b = row[c1];
+
+                row[c0] = a * c - b * s;
+                row[c1] = a * s + b * c;
+            }
+    #endif
+        }
+
+        static void accumulate_left_into_U_parallel(Matrix &U, int r0, int r1,
+                                                    double c, double s,
+                                                    int omp_threads)
+        {
+            // U <- U * L^T，相当于右乘两列，传入 -s。
+            apply_right_cols_parallel(U, r0, r1, c, -s, omp_threads);
+        }
+    // 只在指定行区间 [row_l, row_r] 内对两列做右乘 Givens 旋转。
     // 该函数主要用于并行 one_block_step 中对 B 的局部更新，避免不同 block 写入彼此区域。
     static void apply_right_cols_range(Matrix &M, int c0, int c1, double c, double s,
                                    int row_l, int row_r)
@@ -871,6 +924,34 @@ void gkh_replay_rotations(Matrix &U, Matrix &V,
         else
         {
             accumulate_left_into_U(U, rot.k0, rot.k1, rot.c, rot.s);
+        }
+    }
+}
+
+void gkh_replay_rotations_hybrid(Matrix &U, Matrix &V,
+                                 const std::vector<RotationLog> &logs,
+                                 int omp_threads)
+{
+    if (omp_threads < 1)
+    {
+        omp_threads = 1;
+    }
+
+    if (omp_threads <= 1)
+    {
+        gkh_replay_rotations(U, V, logs);
+        return;
+    }
+
+    for (const auto &rot : logs)
+    {
+        if (rot.side == ROT_RIGHT_V)
+        {
+            apply_right_cols_parallel(V, rot.k0, rot.k1, rot.c, rot.s, omp_threads);
+        }
+        else
+        {
+            accumulate_left_into_U_parallel(U, rot.k0, rot.k1, rot.c, rot.s, omp_threads);
         }
     }
 }

@@ -389,12 +389,13 @@ namespace
     }
 
     static void master_process_pool_task_locally(Matrix &U, Matrix &B, Matrix &V,
-                                                 const GKHBlock &task,
-                                                 double tol,
-                                                 int sweep_cap,
-                                                 Lab4MPIStats &stats,
-                                                 std::vector<GKHBlock> &queue,
-                                                 long long &total_sweeps)
+                                                const GKHBlock &task,
+                                                double tol,
+                                                int sweep_cap,
+                                                int omp_threads,
+                                                Lab4MPIStats &stats,
+                                                std::vector<GKHBlock> &queue,
+                                                long long &total_sweeps)
     {
         const int l = task.l;
         const int r = task.r;
@@ -461,7 +462,7 @@ namespace
 
         const double tm0 = MPI_Wtime();
         gkh_merge_block(B, B_sub, l, r);
-        gkh_replay_rotations(U, V, logs);
+        gkh_replay_rotations_hybrid(U, V, logs, omp_threads);
         const double tm1 = MPI_Wtime();
 
         stats.merge_ms += (tm1 - tm0) * 1000.0;
@@ -817,6 +818,7 @@ bool gkh_svd_from_bidiagonal_mpi_pool(
                     U, B, V, task,
                     opts.tol,
                     opts.sweep_cap,
+                    opts.omp_threads,
                     local_stats,
                     queue,
                     total_sweeps);
@@ -884,7 +886,7 @@ bool gkh_svd_from_bidiagonal_mpi_pool(
 
             const double tm0 = MPI_Wtime();
             gkh_merge_block(B, localB, l, r);
-            gkh_replay_rotations(U, V, logs);
+            gkh_replay_rotations_hybrid(U, V, logs, opts.omp_threads);
             const double tm1 = MPI_Wtime();
 
             local_stats.merge_ms += (tm1 - tm0) * 1000.0;

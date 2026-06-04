@@ -46,6 +46,10 @@ void gkh_merge_block(Matrix &B, const Matrix &localB, int l, int r);
 void gkh_replay_rotations(Matrix &U, Matrix &V,
                           const std::vector<RotationLog> &logs);
 
+void gkh_replay_rotations_hybrid(Matrix &U, Matrix &V,
+                                 const std::vector<RotationLog> &logs,
+                                 int omp_threads);
+
 // 记录版：只改局部 B，不直接改全局 U/V
 void gkh_one_block_step_record(Matrix &B, int l, int r,
                                int global_offset,
