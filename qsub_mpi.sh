@@ -14,7 +14,7 @@ SUBMIT_HOST=${PBS_O_HOST}
 SUBMIT_DIR=${PBS_O_WORKDIR}
 
 # ===== 本轮队列测试参数 =====
-NP=2
+NP=4
 MODE=bench
 IMPL=mpi_pool
 N=1000
@@ -23,7 +23,7 @@ REPEAT=1
 SWEEP_CAP=8
 PROFILE=1
 MASTER_WORK=1
-OMP_THREADS=4
+OMP_THREADS=2
 # ===========================
 
 NODES=$(cat $PBS_NODEFILE | sort | uniq)

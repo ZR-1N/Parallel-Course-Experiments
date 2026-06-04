@@ -4,9 +4,16 @@ set -e
 PROJECT_DIR=/home/${USER}/svd
 cd ${PROJECT_DIR}
 
-echo "[build_mpi] building main ..."
+CXX=${CXX:-mpic++}
+OPT_FLAGS=${OPT_FLAGS:--O2}
+EXTRA_FLAGS=${EXTRA_FLAGS:-}
 
-mpic++ -O2 -std=c++17 -fopenmp -pthread \
+echo "[build_mpi] building main ..."
+echo "[build_mpi] CXX=${CXX}"
+echo "[build_mpi] OPT_FLAGS=${OPT_FLAGS}"
+echo "[build_mpi] EXTRA_FLAGS=${EXTRA_FLAGS}"
+
+${CXX} ${OPT_FLAGS} -std=c++17 -fopenmp -pthread ${EXTRA_FLAGS} \
     main.cpp gkh.cpp gkh_mpi.cpp bidiagonalization.cpp \
     -o main
 

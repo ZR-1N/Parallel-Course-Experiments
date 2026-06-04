@@ -513,6 +513,89 @@ namespace
         stats.tasks_done += 1;
     }
 
+    static void recv_pool_result_payload_and_merge(
+        int worker,
+        const MPIResultHeader &rhdr,
+        Matrix &U,
+        Matrix &B,
+        Matrix &V,
+        const Lab4MPIOptions &opts,
+        Lab4MPIStats &local_stats,
+        std::vector<GKHBlock> &queue,
+        long long &total_sweeps)
+    {
+        const int l = rhdr.l;
+        const int r = rhdr.r;
+        const int bs = r - l + 1;
+
+        double worker_compute_ms = 0.0;
+        MPI_Recv(&worker_compute_ms, 1, MPI_DOUBLE,
+                worker, MPI_TAG_RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        local_stats.worker_compute_ms += worker_compute_ms;
+
+        std::vector<GKHBlock> returned_children;
+        if (rhdr.split_count > 0)
+        {
+            std::vector<int> child_pairs(static_cast<size_t>(rhdr.split_count) * 2);
+            MPI_Recv(child_pairs.data(), static_cast<int>(child_pairs.size()), MPI_INT,
+                    worker, MPI_TAG_RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+            returned_children.reserve(rhdr.split_count);
+            for (int i = 0; i < rhdr.split_count; ++i)
+            {
+                returned_children.push_back(GKHBlock{
+                    child_pairs[2 * i],
+                    child_pairs[2 * i + 1]});
+            }
+        }
+
+        std::vector<RotationLog> logs;
+        if (rhdr.log_count > 0)
+        {
+            logs.resize(rhdr.log_count);
+            MPI_Recv(logs.data(),
+                    static_cast<int>(logs.size() * sizeof(RotationLog)),
+                    MPI_BYTE,
+                    worker, MPI_TAG_RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+
+        std::vector<double> b_buf(static_cast<size_t>(bs) * bs);
+        MPI_Recv(b_buf.data(), static_cast<int>(b_buf.size()), MPI_DOUBLE,
+                worker, MPI_TAG_RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        Matrix localB(bs, bs, 0.0);
+        for (int i = 0; i < bs; ++i)
+        {
+            for (int j = 0; j < bs; ++j)
+            {
+                localB.at(i, j) = b_buf[static_cast<size_t>(i) * bs + j];
+            }
+        }
+
+        const double tm0 = MPI_Wtime();
+        gkh_merge_block(B, localB, l, r);
+        gkh_replay_rotations_hybrid(U, V, logs, opts.omp_threads);
+        const double tm1 = MPI_Wtime();
+
+        local_stats.merge_ms += (tm1 - tm0) * 1000.0;
+        local_stats.tasks_done += 1;
+        local_stats.queue_rounds += 1;
+
+        total_sweeps += rhdr.sweep_count;
+
+        if (!rhdr.converged)
+        {
+            for (const auto &child : returned_children)
+            {
+                queue.push_back(child);
+            }
+
+            local_stats.max_queue_size = std::max<long long>(
+                local_stats.max_queue_size,
+                static_cast<long long>(queue.size()));
+        }
+    }
+
     static void print_profile_if_needed(const char *impl_name,
                                         int world_size,
                                         const Lab4MPIOptions &opts,
@@ -960,6 +1043,316 @@ bool gkh_svd_from_bidiagonal_mpi_pool(
     if (world_rank == 0)
     {
         print_profile_if_needed("mpi_pool_changed_iteration_log", world_size, opts, local_stats);
+    }
+
+    return conv_int != 0;
+}
+
+bool gkh_svd_from_bidiagonal_mpi_nonblocking(
+    Matrix &U, Matrix &B, Matrix &V,
+    const Lab4MPIOptions &opts,
+    Lab4MPIStats *stats)
+{
+    int world_size = 1;
+    int world_rank = 0;
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+
+    int dims[2] = {0, 0};
+    if (world_rank == 0)
+    {
+        dims[0] = B.rows();
+        dims[1] = B.cols();
+    }
+    MPI_Bcast(dims, 2, MPI_INT, 0, MPI_COMM_WORLD);
+
+    const int m = dims[0];
+    const int n = dims[1];
+
+    Lab4MPIStats local_stats{};
+    double worker_compute_ms_sum = 0.0;
+    long long worker_tasks_done_sum = 0;
+
+    const double total_t0 = MPI_Wtime();
+    bool converged = false;
+
+    if (world_rank == 0)
+    {
+        if (world_size <= 1)
+        {
+            const double t0 = MPI_Wtime();
+            converged = gkh_svd_from_bidiagonal(U, B, V, opts.max_iter, opts.tol);
+            const double t1 = MPI_Wtime();
+
+            local_stats.worker_compute_ms = (t1 - t0) * 1000.0;
+            local_stats.total_ms = local_stats.worker_compute_ms;
+
+            if (stats != nullptr)
+            {
+                *stats = local_stats;
+            }
+
+            print_profile_if_needed("mpi_nonblocking_single", world_size, opts, local_stats);
+            return converged;
+        }
+
+        const int worker_count = world_size - 1;
+
+        std::vector<int> idle_workers;
+        idle_workers.reserve(worker_count);
+        for (int worker = 1; worker <= worker_count; ++worker)
+        {
+            idle_workers.push_back(worker);
+        }
+
+        std::vector<MPI_Request> result_reqs(world_size, MPI_REQUEST_NULL);
+        std::vector<MPIResultHeader> result_hdrs(world_size);
+        std::vector<int> worker_active(world_size, 0);
+
+        auto post_result_irecv = [&](int worker)
+        {
+            MPI_Irecv(&result_hdrs[worker],
+                      sizeof(MPIResultHeader),
+                      MPI_BYTE,
+                      worker,
+                      MPI_TAG_RESULT,
+                      MPI_COMM_WORLD,
+                      &result_reqs[worker]);
+            worker_active[worker] = 1;
+        };
+
+        auto test_completed_worker = [&]() -> int
+        {
+            for (int worker = 1; worker < world_size; ++worker)
+            {
+                if (!worker_active[worker])
+                {
+                    continue;
+                }
+
+                int flag = 0;
+                MPI_Status st{};
+                MPI_Test(&result_reqs[worker], &flag, &st);
+
+                if (flag)
+                {
+                    worker_active[worker] = 0;
+                    result_reqs[worker] = MPI_REQUEST_NULL;
+                    return worker;
+                }
+            }
+            return -1;
+        };
+
+        auto wait_completed_worker = [&]() -> int
+        {
+            int index = MPI_UNDEFINED;
+            MPI_Status st{};
+
+            MPI_Waitany(world_size, result_reqs.data(), &index, &st);
+
+            if (index == MPI_UNDEFINED)
+            {
+                return -1;
+            }
+
+            worker_active[index] = 0;
+            result_reqs[index] = MPI_REQUEST_NULL;
+            return index;
+        };
+
+        auto dispatch_task_to_worker = [&](int worker, const GKHBlock &task)
+        {
+            const double td0 = MPI_Wtime();
+            send_pool_task_to_worker(worker, B, task);
+            const double td1 = MPI_Wtime();
+
+            local_stats.dispatch_ms += (td1 - td0) * 1000.0;
+            local_stats.tasks_sent += 1;
+
+            post_result_irecv(worker);
+        };
+
+        gkh_cleanup_bidiagonal_auto(B, opts.tol);
+        gkh_handle_diagonal_zeros(U, B, V, opts.tol);
+
+        std::vector<GKHBlock> init_blocks = gkh_split_active_blocks(B, n, opts.tol);
+        std::vector<GKHBlock> queue;
+
+        for (int i = static_cast<int>(init_blocks.size()) - 1; i >= 0; --i)
+        {
+            if (init_blocks[i].r > init_blocks[i].l)
+            {
+                queue.push_back(init_blocks[i]);
+            }
+        }
+
+        local_stats.max_queue_size = std::max<long long>(
+            local_stats.max_queue_size,
+            static_cast<long long>(queue.size()));
+
+        if (queue.empty())
+        {
+            converged = true;
+        }
+
+        long long total_sweeps = 0;
+        int active_workers = 0;
+
+        while ((!queue.empty() || active_workers > 0) && total_sweeps <= opts.max_iter)
+        {
+            while (!queue.empty() && !idle_workers.empty())
+            {
+                if (opts.master_work && queue.size() <= 1)
+                {
+                    break;
+                }
+
+                const int worker = idle_workers.back();
+                idle_workers.pop_back();
+
+                const GKHBlock task = queue.back();
+                queue.pop_back();
+
+                dispatch_task_to_worker(worker, task);
+                active_workers += 1;
+            }
+
+            const int completed_now = test_completed_worker();
+            if (completed_now > 0)
+            {
+                recv_pool_result_payload_and_merge(
+                    completed_now,
+                    result_hdrs[completed_now],
+                    U, B, V,
+                    opts,
+                    local_stats,
+                    queue,
+                    total_sweeps);
+
+                idle_workers.push_back(completed_now);
+                active_workers -= 1;
+                continue;
+            }
+
+            if (opts.master_work && !queue.empty())
+            {
+                const GKHBlock task = queue.back();
+                queue.pop_back();
+
+                master_process_pool_task_locally(
+                    U, B, V,
+                    task,
+                    opts.tol,
+                    opts.sweep_cap,
+                    opts.omp_threads,
+                    local_stats,
+                    queue,
+                    total_sweeps);
+
+                continue;
+            }
+
+            if (active_workers > 0)
+            {
+                const int completed_wait = wait_completed_worker();
+
+                if (completed_wait > 0)
+                {
+                    recv_pool_result_payload_and_merge(
+                        completed_wait,
+                        result_hdrs[completed_wait],
+                        U, B, V,
+                        opts,
+                        local_stats,
+                        queue,
+                        total_sweeps);
+
+                    idle_workers.push_back(completed_wait);
+                    active_workers -= 1;
+                }
+
+                continue;
+            }
+
+            if (!queue.empty() && idle_workers.empty())
+            {
+                continue;
+            }
+
+            if (!queue.empty() && !opts.master_work)
+            {
+                continue;
+            }
+
+            if (!queue.empty() && opts.master_work)
+            {
+                continue;
+            }
+
+            break;
+        }
+
+        for (int worker = 1; worker < world_size; ++worker)
+        {
+            if (worker_active[worker])
+            {
+                MPI_Cancel(&result_reqs[worker]);
+                MPI_Request_free(&result_reqs[worker]);
+                worker_active[worker] = 0;
+            }
+            send_stop_to_worker(worker);
+        }
+
+        if (total_sweeps <= opts.max_iter)
+        {
+            gkh_cleanup_bidiagonal_auto(B, opts.tol);
+            gkh_handle_diagonal_zeros(U, B, V, opts.tol);
+            std::vector<GKHBlock> final_blocks = gkh_split_active_blocks(B, n, opts.tol);
+
+            converged = true;
+            for (const auto &blk : final_blocks)
+            {
+                if (blk.r > blk.l)
+                {
+                    converged = false;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            converged = false;
+        }
+
+        gkh_finalize_result(U, B, V, opts.tol);
+    }
+    else
+    {
+        worker_loop_until_split_or_cap(
+            m, n,
+            opts.tol,
+            opts.sweep_cap,
+            &worker_compute_ms_sum,
+            &worker_tasks_done_sum);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    const double total_t1 = MPI_Wtime();
+    local_stats.total_ms = (total_t1 - total_t0) * 1000.0;
+
+    int conv_int = converged ? 1 : 0;
+    MPI_Bcast(&conv_int, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (world_rank == 0 && stats != nullptr)
+    {
+        *stats = local_stats;
+    }
+
+    if (world_rank == 0)
+    {
+        print_profile_if_needed("mpi_nonblocking_irecv_test", world_size, opts, local_stats);
     }
 
     return conv_int != 0;

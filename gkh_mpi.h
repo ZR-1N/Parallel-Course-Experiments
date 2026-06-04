@@ -37,3 +37,8 @@ bool gkh_svd_from_bidiagonal_mpi_pool(
     Matrix &U, Matrix &B, Matrix &V,
     const Lab4MPIOptions &opts,
     Lab4MPIStats *stats);
+
+bool gkh_svd_from_bidiagonal_mpi_nonblocking(
+    Matrix &U, Matrix &B, Matrix &V,
+    const Lab4MPIOptions &opts,
+    Lab4MPIStats *stats);
