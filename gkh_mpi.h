@@ -22,9 +22,17 @@ struct Lab4MPIStats
 
     long long tasks_sent = 0;
     long long tasks_done = 0;
+
+    long long queue_rounds = 0;
+    long long max_queue_size = 0;
 };
 
 bool gkh_svd_from_bidiagonal_mpi_blocking(
+    Matrix &U, Matrix &B, Matrix &V,
+    const Lab4MPIOptions &opts,
+    Lab4MPIStats *stats);
+
+bool gkh_svd_from_bidiagonal_mpi_pool(
     Matrix &U, Matrix &B, Matrix &V,
     const Lab4MPIOptions &opts,
     Lab4MPIStats *stats);

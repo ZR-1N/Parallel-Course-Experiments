@@ -16,7 +16,7 @@ SUBMIT_DIR=${PBS_O_WORKDIR}
 # ===== 本轮队列测试参数 =====
 NP=2
 MODE=bench
-IMPL=mpi_blocking
+IMPL=mpi_pool
 N=64
 SEED=20260408
 REPEAT=1

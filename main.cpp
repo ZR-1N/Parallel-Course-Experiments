@@ -267,6 +267,43 @@ static bool run_case(const std::string &name,
             sum_gkh_ms += time_gkh_ms;
         }
     }
+    else if (args.impl == "mpi_pool")
+    {
+        if (world_rank == 0)
+        {
+            using Clock = std::chrono::high_resolution_clock;
+            const auto t_beg_bidiag = Clock::now();
+            B = to_bidiagonal(A_root, U, V);
+            const auto t_end_bidiag = Clock::now();
+
+            time_bidiag_ms =
+                std::chrono::duration<double, std::milli>(t_end_bidiag - t_beg_bidiag).count();
+            sum_bidiag_ms += time_bidiag_ms;
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        Lab4MPIOptions opts;
+        opts.max_iter = 6000;
+        opts.tol = 1e-12;
+        opts.sweep_cap = args.sweep_cap;
+        opts.profile = (args.profile != 0);
+        opts.master_work = (args.master_work != 0);
+        opts.omp_threads = args.omp_threads;
+
+        Lab4MPIStats stats_local;
+        const double t0 = MPI_Wtime();
+        converged = gkh_svd_from_bidiagonal_mpi_pool(U, B, V, opts, &stats_local);
+        MPI_Barrier(MPI_COMM_WORLD);
+        const double t1 = MPI_Wtime();
+
+        if (world_rank == 0)
+        {
+            mpi_stats = stats_local;
+            time_gkh_ms = (t1 - t0) * 1000.0;
+            sum_gkh_ms += time_gkh_ms;
+        }
+    }
     else
     {
         if (world_rank == 0)
