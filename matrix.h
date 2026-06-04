@@ -15,7 +15,7 @@ public:
 
     // 访问元素
     double &at(int r, int c) { return data_[r * cols_ + c]; }
-    double at(int r, int c) const { return data_[r * cols_ + c]; }
+    const double &at(int r, int c) const { return data_[r * cols_ + c]; }
 
     int rows() const { return rows_; }
     int cols() const { return cols_; }

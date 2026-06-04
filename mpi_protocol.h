@@ -17,4 +17,5 @@ struct MPIResultHeader
     int converged;
     int split_count;
     int sweep_count;
+    int log_count;
 };

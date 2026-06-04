@@ -17,6 +17,7 @@ struct Lab4MPIStats
 {
     double dispatch_ms = 0.0;
     double worker_compute_ms = 0.0;
+    double master_compute_ms = 0.0;
     double merge_ms = 0.0;
     double total_ms = 0.0;
 

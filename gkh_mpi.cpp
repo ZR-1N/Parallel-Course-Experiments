@@ -115,6 +115,30 @@ namespace
         MPI_Send(&hdr, sizeof(hdr), MPI_BYTE, worker_rank, MPI_TAG_STOP, MPI_COMM_WORLD);
     }
 
+    static void send_pool_task_to_worker(int worker_rank,
+                                         const Matrix &B,
+                                         const GKHBlock &blk)
+    {
+        MPITaskHeader hdr;
+        hdr.l = blk.l;
+        hdr.r = blk.r;
+
+        Matrix localB = gkh_extract_block(B, blk.l, blk.r);
+        const int bs = localB.rows();
+
+        std::vector<double> b_buf(static_cast<size_t>(bs) * bs, 0.0);
+        for (int i = 0; i < bs; ++i)
+        {
+            for (int j = 0; j < bs; ++j)
+            {
+                b_buf[static_cast<size_t>(i) * bs + j] = localB.at(i, j);
+            }
+        }
+
+        MPI_Send(&hdr, sizeof(hdr), MPI_BYTE, worker_rank, MPI_TAG_TASK, MPI_COMM_WORLD);
+        MPI_Send(b_buf.data(), static_cast<int>(b_buf.size()), MPI_DOUBLE, worker_rank, MPI_TAG_TASK, MPI_COMM_WORLD);
+    }
+
     static void worker_loop_step_only(int m, int n,
                                       double *worker_compute_ms_sum,
                                       long long *tasks_done_sum)
@@ -219,175 +243,244 @@ namespace
         }
     }
 
-        static void worker_loop_until_split_or_cap(int m, int n,
+    static void worker_loop_until_split_or_cap(int m, int n,
                                                double tol, int sweep_cap,
                                                double *worker_compute_ms_sum,
                                                long long *tasks_done_sum)
+    {
+        (void)m;
+        (void)n;
+
+        const int cap = std::max(1, sweep_cap);
+
+        while (true)
         {
-            const int cap = std::max(1, sweep_cap);
+            MPITaskHeader hdr{};
+            MPI_Status st{};
+            MPI_Recv(&hdr, sizeof(hdr), MPI_BYTE, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &st);
 
-            while (true)
+            if (st.MPI_TAG == MPI_TAG_STOP)
             {
-                MPITaskHeader hdr{};
-                MPI_Status st{};
-                MPI_Recv(&hdr, sizeof(hdr), MPI_BYTE, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &st);
+                break;
+            }
 
-                if (st.MPI_TAG == MPI_TAG_STOP)
+            const int l = hdr.l;
+            const int r = hdr.r;
+            const int bs = r - l + 1;
+
+            std::vector<double> b_buf(static_cast<size_t>(bs) * bs);
+            MPI_Recv(b_buf.data(), static_cast<int>(b_buf.size()), MPI_DOUBLE, 0, MPI_TAG_TASK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+            Matrix B_sub(bs, bs, 0.0);
+            for (int i = 0; i < bs; ++i)
+            {
+                for (int j = 0; j < bs; ++j)
                 {
+                    B_sub.at(i, j) = b_buf[static_cast<size_t>(i) * bs + j];
+                }
+            }
+
+            bool local_converged = false;
+            int local_sweeps = 0;
+            std::vector<GKHBlock> children_global;
+            std::vector<RotationLog> logs;
+
+            const double t0 = MPI_Wtime();
+
+            while (local_sweeps < cap)
+            {
+                gkh_cleanup_bidiagonal_auto(B_sub, tol);
+                gkh_handle_diagonal_zeros_record(B_sub, l, tol, logs);
+
+                std::vector<GKHBlock> blocks = gkh_split_active_blocks(B_sub, bs, tol);
+                std::vector<GKHBlock> nontrivial;
+
+                for (const auto &blk : blocks)
+                {
+                    if (blk.r > blk.l)
+                    {
+                        nontrivial.push_back(blk);
+                    }
+                }
+
+                if (nontrivial.empty())
+                {
+                    local_converged = true;
                     break;
                 }
 
-                const int l = hdr.l;
-                const int r = hdr.r;
-                const int bs = r - l + 1;
+                const bool split_happened =
+                    !(nontrivial.size() == 1 &&
+                      nontrivial[0].l == 0 &&
+                      nontrivial[0].r == bs - 1);
 
-                std::vector<double> u_buf(static_cast<size_t>(m) * bs);
-                std::vector<double> b_buf(static_cast<size_t>(bs) * bs);
-                std::vector<double> v_buf(static_cast<size_t>(n) * bs);
-
-                MPI_Recv(u_buf.data(), static_cast<int>(u_buf.size()), MPI_DOUBLE, 0, MPI_TAG_TASK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                MPI_Recv(b_buf.data(), static_cast<int>(b_buf.size()), MPI_DOUBLE, 0, MPI_TAG_TASK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                MPI_Recv(v_buf.data(), static_cast<int>(v_buf.size()), MPI_DOUBLE, 0, MPI_TAG_TASK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-                Matrix U_sub(m, bs, 0.0);
-                Matrix B_sub(bs, bs, 0.0);
-                Matrix V_sub(n, bs, 0.0);
-
-                for (int i = 0; i < m; ++i)
+                if (split_happened)
                 {
-                    for (int j = 0; j < bs; ++j)
+                    children_global.clear();
+                    for (const auto &blk : nontrivial)
                     {
-                        U_sub.at(i, j) = u_buf[static_cast<size_t>(i) * bs + j];
+                        children_global.push_back(GKHBlock{l + blk.l, l + blk.r});
                     }
-                }
-                for (int i = 0; i < bs; ++i)
-                {
-                    for (int j = 0; j < bs; ++j)
-                    {
-                        B_sub.at(i, j) = b_buf[static_cast<size_t>(i) * bs + j];
-                    }
-                }
-                for (int i = 0; i < n; ++i)
-                {
-                    for (int j = 0; j < bs; ++j)
-                    {
-                        V_sub.at(i, j) = v_buf[static_cast<size_t>(i) * bs + j];
-                    }
+                    break;
                 }
 
-                bool local_converged = false;
-                int local_sweeps = 0;
-                std::vector<GKHBlock> children_global;
-
-                const double t0 = MPI_Wtime();
-
-                while (local_sweeps < cap)
-                {
-                    gkh_cleanup_bidiagonal_auto(B_sub, tol);
-                    gkh_handle_diagonal_zeros(U_sub, B_sub, V_sub, tol);
-
-                    std::vector<GKHBlock> blocks = gkh_split_active_blocks(B_sub, bs, tol);
-                    std::vector<GKHBlock> nontrivial;
-
-                    for (const auto &blk : blocks)
-                    {
-                        if (blk.r > blk.l)
-                        {
-                            nontrivial.push_back(blk);
-                        }
-                    }
-
-                    if (nontrivial.empty())
-                    {
-                        local_converged = true;
-                        break;
-                    }
-
-                    const bool split_happened =
-                        !(nontrivial.size() == 1 &&
-                        nontrivial[0].l == 0 &&
-                        nontrivial[0].r == bs - 1);
-
-                    if (split_happened)
-                    {
-                        children_global.clear();
-                        for (const auto &blk : nontrivial)
-                        {
-                            children_global.push_back(GKHBlock{l + blk.l, l + blk.r});
-                        }
-                        break;
-                    }
-
-                    gkh_one_block_step(U_sub, B_sub, V_sub, 0, bs - 1);
-                    local_sweeps += 1;
-                }
-
-                const double t1 = MPI_Wtime();
-                const double compute_ms = (t1 - t0) * 1000.0;
-
-                if (worker_compute_ms_sum != nullptr)
-                {
-                    *worker_compute_ms_sum += compute_ms;
-                }
-                if (tasks_done_sum != nullptr)
-                {
-                    *tasks_done_sum += 1;
-                }
-
-                // 到达 cap 但没 split / 没收敛，则把原 block 重新放回队列
-                if (!local_converged && children_global.empty())
-                {
-                    children_global.push_back(GKHBlock{l, r});
-                }
-
-                for (int i = 0; i < m; ++i)
-                {
-                    for (int j = 0; j < bs; ++j)
-                    {
-                        u_buf[static_cast<size_t>(i) * bs + j] = U_sub.at(i, j);
-                    }
-                }
-                for (int i = 0; i < bs; ++i)
-                {
-                    for (int j = 0; j < bs; ++j)
-                    {
-                        b_buf[static_cast<size_t>(i) * bs + j] = B_sub.at(i, j);
-                    }
-                }
-                for (int i = 0; i < n; ++i)
-                {
-                    for (int j = 0; j < bs; ++j)
-                    {
-                        v_buf[static_cast<size_t>(i) * bs + j] = V_sub.at(i, j);
-                    }
-                }
-
-                MPIResultHeader rhdr{};
-                rhdr.l = l;
-                rhdr.r = r;
-                rhdr.converged = local_converged ? 1 : 0;
-                rhdr.split_count = static_cast<int>(children_global.size());
-                rhdr.sweep_count = local_sweeps;
-
-                MPI_Send(&rhdr, sizeof(rhdr), MPI_BYTE, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
-                MPI_Send(&compute_ms, 1, MPI_DOUBLE, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
-
-                if (!children_global.empty())
-                {
-                    std::vector<int> child_pairs(static_cast<size_t>(children_global.size()) * 2);
-                    for (size_t i = 0; i < children_global.size(); ++i)
-                    {
-                        child_pairs[2 * i] = children_global[i].l;
-                        child_pairs[2 * i + 1] = children_global[i].r;
-                    }
-                    MPI_Send(child_pairs.data(), static_cast<int>(child_pairs.size()), MPI_INT, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
-                }
-
-                MPI_Send(u_buf.data(), static_cast<int>(u_buf.size()), MPI_DOUBLE, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
-                MPI_Send(b_buf.data(), static_cast<int>(b_buf.size()), MPI_DOUBLE, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
-                MPI_Send(v_buf.data(), static_cast<int>(v_buf.size()), MPI_DOUBLE, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
+                gkh_one_block_step_record(B_sub, 0, bs - 1, l, logs);
+                local_sweeps += 1;
             }
+
+            const double t1 = MPI_Wtime();
+            const double compute_ms = (t1 - t0) * 1000.0;
+
+            if (worker_compute_ms_sum != nullptr)
+            {
+                *worker_compute_ms_sum += compute_ms;
+            }
+            if (tasks_done_sum != nullptr)
+            {
+                *tasks_done_sum += 1;
+            }
+
+            // 到达 cap 但既没 split 也没收敛，则把原块重新放回队列
+            if (!local_converged && children_global.empty())
+            {
+                children_global.push_back(GKHBlock{l, r});
+            }
+
+            for (int i = 0; i < bs; ++i)
+            {
+                for (int j = 0; j < bs; ++j)
+                {
+                    b_buf[static_cast<size_t>(i) * bs + j] = B_sub.at(i, j);
+                }
+            }
+
+            MPIResultHeader rhdr{};
+            rhdr.l = l;
+            rhdr.r = r;
+            rhdr.converged = local_converged ? 1 : 0;
+            rhdr.split_count = static_cast<int>(children_global.size());
+            rhdr.sweep_count = local_sweeps;
+            rhdr.log_count = static_cast<int>(logs.size());
+
+            MPI_Send(&rhdr, sizeof(rhdr), MPI_BYTE, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
+            MPI_Send(&compute_ms, 1, MPI_DOUBLE, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
+
+            if (!children_global.empty())
+            {
+                std::vector<int> child_pairs(static_cast<size_t>(children_global.size()) * 2);
+                for (size_t i = 0; i < children_global.size(); ++i)
+                {
+                    child_pairs[2 * i] = children_global[i].l;
+                    child_pairs[2 * i + 1] = children_global[i].r;
+                }
+                MPI_Send(child_pairs.data(), static_cast<int>(child_pairs.size()), MPI_INT, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
+            }
+
+            if (!logs.empty())
+            {
+                MPI_Send(logs.data(),
+                         static_cast<int>(logs.size() * sizeof(RotationLog)),
+                         MPI_BYTE,
+                         0, MPI_TAG_RESULT, MPI_COMM_WORLD);
+            }
+
+            MPI_Send(b_buf.data(), static_cast<int>(b_buf.size()), MPI_DOUBLE, 0, MPI_TAG_RESULT, MPI_COMM_WORLD);
         }
+    }
+
+    static void master_process_pool_task_locally(Matrix &U, Matrix &B, Matrix &V,
+                                                 const GKHBlock &task,
+                                                 double tol,
+                                                 int sweep_cap,
+                                                 Lab4MPIStats &stats,
+                                                 std::vector<GKHBlock> &queue,
+                                                 long long &total_sweeps)
+    {
+        const int l = task.l;
+        const int r = task.r;
+        const int bs = r - l + 1;
+        const int cap = std::max(1, sweep_cap);
+
+        Matrix B_sub = gkh_extract_block(B, l, r);
+
+        bool local_converged = false;
+        int local_sweeps = 0;
+        std::vector<GKHBlock> children_global;
+        std::vector<RotationLog> logs;
+
+        const double tc0 = MPI_Wtime();
+
+        while (local_sweeps < cap)
+        {
+            gkh_cleanup_bidiagonal_auto(B_sub, tol);
+            gkh_handle_diagonal_zeros_record(B_sub, l, tol, logs);
+
+            std::vector<GKHBlock> blocks = gkh_split_active_blocks(B_sub, bs, tol);
+            std::vector<GKHBlock> nontrivial;
+
+            for (const auto &blk : blocks)
+            {
+                if (blk.r > blk.l)
+                {
+                    nontrivial.push_back(blk);
+                }
+            }
+
+            if (nontrivial.empty())
+            {
+                local_converged = true;
+                break;
+            }
+
+            const bool split_happened =
+                !(nontrivial.size() == 1 &&
+                  nontrivial[0].l == 0 &&
+                  nontrivial[0].r == bs - 1);
+
+            if (split_happened)
+            {
+                children_global.clear();
+                for (const auto &blk : nontrivial)
+                {
+                    children_global.push_back(GKHBlock{l + blk.l, l + blk.r});
+                }
+                break;
+            }
+
+            gkh_one_block_step_record(B_sub, 0, bs - 1, l, logs);
+            local_sweeps += 1;
+        }
+
+        const double tc1 = MPI_Wtime();
+        stats.master_compute_ms += (tc1 - tc0) * 1000.0;
+
+        if (!local_converged && children_global.empty())
+        {
+            children_global.push_back(GKHBlock{l, r});
+        }
+
+        const double tm0 = MPI_Wtime();
+        gkh_merge_block(B, B_sub, l, r);
+        gkh_replay_rotations(U, V, logs);
+        const double tm1 = MPI_Wtime();
+
+        stats.merge_ms += (tm1 - tm0) * 1000.0;
+        stats.tasks_done += 1;
+        stats.queue_rounds += 1;
+        total_sweeps += local_sweeps;
+
+        if (!local_converged)
+        {
+            for (const auto &child : children_global)
+            {
+                queue.push_back(child);
+            }
+
+            stats.max_queue_size = std::max<long long>(
+                stats.max_queue_size,
+                static_cast<long long>(queue.size()));
+        }
+    }
 
     static void recv_result_and_merge(int worker,
                                       const MPIResultHeader &rhdr,
@@ -434,6 +527,7 @@ namespace
                   << "world_size=" << world_size << " "
                   << "dispatch_ms=" << stats.dispatch_ms << " "
                   << "worker_compute_ms=" << stats.worker_compute_ms << " "
+                  << "master_compute_ms=" << stats.master_compute_ms << " "
                   << "merge_ms=" << stats.merge_ms << " "
                   << "total_ms=" << stats.total_ms << " "
                   << "tasks_sent=" << stats.tasks_sent << " "
@@ -689,26 +783,53 @@ bool gkh_svd_from_bidiagonal_mpi_pool(
 
         while ((!queue.empty() || active_workers > 0) && total_sweeps <= opts.max_iter)
         {
-            while (!queue.empty() && !idle_workers.empty())
+            auto dispatch_to_idle_workers = [&]()
             {
-                const int worker = idle_workers.back();
-                idle_workers.pop_back();
+                while (!queue.empty() && !idle_workers.empty() &&
+                    (!opts.master_work || queue.size() > 1))
+                {
+                    const int worker = idle_workers.back();
+                    idle_workers.pop_back();
 
+                    const GKHBlock task = queue.back();
+                    queue.pop_back();
+
+                    const double t0 = MPI_Wtime();
+                    send_pool_task_to_worker(worker, B, task);
+                    const double t1 = MPI_Wtime();
+
+                    local_stats.dispatch_ms += (t1 - t0) * 1000.0;
+                    local_stats.tasks_sent += 1;
+                    active_workers += 1;
+                }
+            };
+
+            // 1) 先给 worker 分发，但开启 master_work 时保留一个任务给 master
+            dispatch_to_idle_workers();
+
+            // 2) master 处理保留下来的一个任务
+            if (opts.master_work && !queue.empty())
+            {
                 const GKHBlock task = queue.back();
                 queue.pop_back();
 
-                const double t0 = MPI_Wtime();
-                send_task_to_worker(worker, U, B, V, task);
-                const double t1 = MPI_Wtime();
-
-                local_stats.dispatch_ms += (t1 - t0) * 1000.0;
-                local_stats.tasks_sent += 1;
-                active_workers += 1;
+                master_process_pool_task_locally(
+                    U, B, V, task,
+                    opts.tol,
+                    opts.sweep_cap,
+                    local_stats,
+                    queue,
+                    total_sweeps);
             }
 
+            // 3) master 本地计算可能产生新任务，再尝试分发给空闲 worker
+            dispatch_to_idle_workers();
+
+            // 4) 如果没有正在工作的 worker，就回到循环顶部。
+            // 注意这里不要 break，因为 master 本地计算可能刚刚产生了新任务。
             if (active_workers == 0)
             {
-                break;
+                continue;
             }
 
             MPIResultHeader rhdr{};
@@ -739,16 +860,31 @@ bool gkh_svd_from_bidiagonal_mpi_pool(
                 }
             }
 
-            std::vector<double> u_buf(static_cast<size_t>(m) * bs);
-            std::vector<double> b_buf(static_cast<size_t>(bs) * bs);
-            std::vector<double> v_buf(static_cast<size_t>(n) * bs);
+            std::vector<RotationLog> logs;
+            if (rhdr.log_count > 0)
+            {
+                logs.resize(rhdr.log_count);
+                MPI_Recv(logs.data(),
+                        static_cast<int>(logs.size() * sizeof(RotationLog)),
+                        MPI_BYTE,
+                        worker, MPI_TAG_RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
 
-            MPI_Recv(u_buf.data(), static_cast<int>(u_buf.size()), MPI_DOUBLE, worker, MPI_TAG_RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            std::vector<double> b_buf(static_cast<size_t>(bs) * bs);
             MPI_Recv(b_buf.data(), static_cast<int>(b_buf.size()), MPI_DOUBLE, worker, MPI_TAG_RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            MPI_Recv(v_buf.data(), static_cast<int>(v_buf.size()), MPI_DOUBLE, worker, MPI_TAG_RESULT, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+            Matrix localB(bs, bs, 0.0);
+            for (int i = 0; i < bs; ++i)
+            {
+                for (int j = 0; j < bs; ++j)
+                {
+                    localB.at(i, j) = b_buf[static_cast<size_t>(i) * bs + j];
+                }
+            }
 
             const double tm0 = MPI_Wtime();
-            unpack_task_result(U, B, V, GKHBlock{l, r}, u_buf, b_buf, v_buf);
+            gkh_merge_block(B, localB, l, r);
+            gkh_replay_rotations(U, V, logs);
             const double tm1 = MPI_Wtime();
 
             local_stats.merge_ms += (tm1 - tm0) * 1000.0;
@@ -776,7 +912,6 @@ bool gkh_svd_from_bidiagonal_mpi_pool(
             send_stop_to_worker(worker);
         }
 
-        // 若 sweep budget 没超，做一次最终全局检查
         if (total_sweeps <= opts.max_iter)
         {
             gkh_cleanup_bidiagonal_auto(B, opts.tol);
@@ -822,7 +957,7 @@ bool gkh_svd_from_bidiagonal_mpi_pool(
 
     if (world_rank == 0)
     {
-        print_profile_if_needed("mpi_pool_changed_iteration", world_size, opts, local_stats);
+        print_profile_if_needed("mpi_pool_changed_iteration_log", world_size, opts, local_stats);
     }
 
     return conv_int != 0;

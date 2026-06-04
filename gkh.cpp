@@ -191,33 +191,50 @@ static int get_svd_num_threads()
     // 即 M <- M * R，其中 R 只作用在第 c0/c1 两列上。
     static void apply_right_cols(Matrix &M, int c0, int c1, double c, double s)
     {
-        for (int i = 0; i < M.rows(); ++i)
+        const int rows = M.rows();
+        const int cols = M.cols();
+
+        if (rows <= 0 || cols <= 0)
         {
-            double a = M.at(i, c0);
-            double b = M.at(i, c1);
-            M.at(i, c0) = a * c - b * s;
-            M.at(i, c1) = a * s + b * c;
+            return;
+        }
+
+        double *base = &M.at(0, 0);
+
+        for (int i = 0; i < rows; ++i)
+        {
+            double *row = base + static_cast<size_t>(i) * cols;
+            const double a = row[c0];
+            const double b = row[c1];
+
+            row[c0] = a * c - b * s;
+            row[c1] = a * s + b * c;
         }
     }
         // 只在指定行区间 [row_l, row_r] 内对两列做右乘 Givens 旋转。
     // 该函数主要用于并行 one_block_step 中对 B 的局部更新，避免不同 block 写入彼此区域。
     static void apply_right_cols_range(Matrix &M, int c0, int c1, double c, double s,
-                                       int row_l, int row_r)
+                                   int row_l, int row_r)
     {
         row_l = std::max(row_l, 0);
         row_r = std::min(row_r, M.rows() - 1);
 
-        if (row_l > row_r)
+        if (row_l > row_r || M.cols() <= 0)
         {
             return;
         }
 
+        const int cols = M.cols();
+        double *base = &M.at(0, 0);
+
         for (int i = row_l; i <= row_r; ++i)
         {
-            double a = M.at(i, c0);
-            double b = M.at(i, c1);
-            M.at(i, c0) = a * c - b * s;
-            M.at(i, c1) = a * s + b * c;
+            double *row = base + static_cast<size_t>(i) * cols;
+            const double a = row[c0];
+            const double b = row[c1];
+
+            row[c0] = a * c - b * s;
+            row[c1] = a * s + b * c;
         }
     }
 
@@ -359,6 +376,119 @@ static int get_svd_num_threads()
             apply_left_rows_range(B, k, k + 1, c, s, l, r);
             accumulate_left_into_U(U, k, k + 1, c, s);
         }
+    }
+    static void one_block_step_record_impl(Matrix &B, int l, int r,
+                                           int global_offset,
+                                           std::vector<RotationLog> &logs)
+    {
+        if (r <= l)
+        {
+            return;
+        }
+
+        const double mu = block_wilkinson_shift(B, l, r);
+
+        double c = 1.0;
+        double s = 0.0;
+        double rr = 0.0;
+
+        // 首次右乘
+        const double x = B.at(l, l) * B.at(l, l) - mu;
+        const double z = B.at(l, l) * B.at(l, l + 1);
+        givens_rotation(x, z, c, s, rr, false);
+        apply_right_cols_range(B, l, l + 1, c, s, l, r);
+        logs.push_back({ROT_RIGHT_V, global_offset + l, global_offset + l + 1, c, s});
+
+        // 首次左乘
+        givens_rotation(B.at(l, l), B.at(l + 1, l), c, s, rr, true);
+        apply_left_rows_range(B, l, l + 1, c, s, l, r);
+        logs.push_back({ROT_LEFT_U, global_offset + l, global_offset + l + 1, c, s});
+
+        for (int k = l + 1; k <= r - 1; ++k)
+        {
+            // 右乘
+            givens_rotation(B.at(k - 1, k), B.at(k - 1, k + 1), c, s, rr, false);
+            apply_right_cols_range(B, k, k + 1, c, s, l, r);
+            logs.push_back({ROT_RIGHT_V, global_offset + k, global_offset + k + 1, c, s});
+
+            // 左乘
+            givens_rotation(B.at(k, k), B.at(k + 1, k), c, s, rr, true);
+            apply_left_rows_range(B, k, k + 1, c, s, l, r);
+            logs.push_back({ROT_LEFT_U, global_offset + k, global_offset + k + 1, c, s});
+        }
+    }
+
+    static bool chase_zero_diagonal_record_impl(Matrix &B,
+                                                int k,
+                                                int global_offset,
+                                                double tol,
+                                                std::vector<RotationLog> &logs)
+    {
+        const int m = B.rows();
+        const int n = B.cols();
+
+        if (k < 0 || k >= n - 1)
+        {
+            return false;
+        }
+
+        if (std::fabs(B.at(k, k + 1)) <= tol)
+        {
+            return false;
+        }
+
+        bool changed = false;
+        for (int i = k; i <= n - 2; ++i)
+        {
+            double c = 1.0;
+            double s = 0.0;
+            double rr = 0.0;
+
+            // 右乘：消去 e_i
+            givens_rotation(B.at(i, i), B.at(i, i + 1), c, s, rr, false);
+            apply_right_cols(B, i, i + 1, c, s);
+            logs.push_back({ROT_RIGHT_V, global_offset + i, global_offset + i + 1, c, s});
+
+            // 左乘：消去引入的 bulge
+            if (i + 1 < m)
+            {
+                givens_rotation(B.at(i, i), B.at(i + 1, i), c, s, rr, true);
+                apply_left_rows(B, i, i + 1, c, s);
+                logs.push_back({ROT_LEFT_U, global_offset + i, global_offset + i + 1, c, s});
+            }
+
+            changed = true;
+        }
+
+        cleanup_bidiagonal(B, tol);
+        return changed;
+    }
+
+    static bool handle_diagonal_zeros_record_impl(Matrix &B,
+                                                  int global_offset,
+                                                  double tol,
+                                                  std::vector<RotationLog> &logs)
+    {
+        const int n = B.cols();
+        bool changed = false;
+
+        const double eps = std::numeric_limits<double>::epsilon();
+        const double diag_tol = tol;
+        const double super_tol = tol * (1.0 + 10.0 * eps);
+
+        for (int k = 0; k < n - 1; ++k)
+        {
+            if (std::fabs(B.at(k, k)) <= diag_tol &&
+                std::fabs(B.at(k, k + 1)) > super_tol)
+            {
+                if (chase_zero_diagonal_record_impl(B, k, global_offset, tol, logs))
+                {
+                    changed = true;
+                }
+            }
+        }
+
+        return changed;
     }
     struct PthreadBlockContext
     {
@@ -702,7 +832,63 @@ void gkh_finalize_result(Matrix &U, Matrix &B, Matrix &V, double tol)
     }
     make_nonnegative_and_sort(U, B, V);
 }
+Matrix gkh_extract_block(const Matrix &B, int l, int r)
+{
+    const int len = r - l + 1;
+    Matrix localB(len, len, 0.0);
 
+    for (int i = 0; i < len; ++i)
+    {
+        const double *src = &B.at(l + i, l);
+        double *dst = &localB.at(i, 0);
+        std::copy(src, src + len, dst);
+    }
+
+    return localB;
+}
+
+void gkh_merge_block(Matrix &B, const Matrix &localB, int l, int r)
+{
+    const int len = r - l + 1;
+
+    for (int i = 0; i < len; ++i)
+    {
+        const double *src = &localB.at(i, 0);
+        double *dst = &B.at(l + i, l);
+        std::copy(src, src + len, dst);
+    }
+}
+
+void gkh_replay_rotations(Matrix &U, Matrix &V,
+                          const std::vector<RotationLog> &logs)
+{
+    for (const auto &rot : logs)
+    {
+        if (rot.side == ROT_RIGHT_V)
+        {
+            apply_right_cols(V, rot.k0, rot.k1, rot.c, rot.s);
+        }
+        else
+        {
+            accumulate_left_into_U(U, rot.k0, rot.k1, rot.c, rot.s);
+        }
+    }
+}
+
+void gkh_one_block_step_record(Matrix &B, int l, int r,
+                               int global_offset,
+                               std::vector<RotationLog> &logs)
+{
+    one_block_step_record_impl(B, l, r, global_offset, logs);
+}
+
+bool gkh_handle_diagonal_zeros_record(Matrix &B,
+                                      int global_offset,
+                                      double tol,
+                                      std::vector<RotationLog> &logs)
+{
+    return handle_diagonal_zeros_record_impl(B, global_offset, tol, logs);
+}
 // 从“上二对角矩阵 B”出发执行 Golub-Kahan SVD 迭代（改进版）：
 // - 输入输出满足 A = U * B * V^T 不变；
 // - 迭代中自动分块、处理对角近零、并在每个活动块上做 bulge chasing；
