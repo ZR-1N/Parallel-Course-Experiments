@@ -63,11 +63,8 @@ static int get_svd_num_threads()
 
     // 活动块 [l, r]（闭区间）表示一个尚未完全收敛的上二对角子问题。
     // 在该区间内，超对角线元素非零，你可以认为通过这个抽象结构给矩阵“分块”。
-    struct Block
-    {
-        int l;
-        int r;
-    };
+    using Block = GKHBlock;
+    
     static double now_ms()
     {
         using clock = std::chrono::steady_clock;
@@ -386,7 +383,7 @@ static int get_svd_num_threads()
             }
 
             const Block &blk = (*(ctx->tasks))[task_id];
-            one_block_step(*(ctx->U), *(ctx->B), *(ctx->V), blk.l, blk.r);
+            gkh_one_block_step(*(ctx->U), *(ctx->B), *(ctx->V), blk.l, blk.r);
         }
 
         return nullptr;
@@ -412,7 +409,7 @@ static int get_svd_num_threads()
         {
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
             return;
         }
@@ -459,7 +456,7 @@ static int get_svd_num_threads()
         for (int task_id = worker->thread_id; task_id < task_count; task_id += worker->thread_count)
         {
             const Block &blk = (*(worker->tasks))[task_id];
-            one_block_step(*(worker->U), *(worker->B), *(worker->V), blk.l, blk.r);
+            gkh_one_block_step(*(worker->U), *(worker->B), *(worker->V), blk.l, blk.r);
         }
 
         return nullptr;
@@ -485,7 +482,7 @@ static int get_svd_num_threads()
         {
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
             return;
         }
@@ -676,6 +673,36 @@ static int get_svd_num_threads()
 
 } // namespace
 
+void gkh_cleanup_bidiagonal_auto(Matrix &B, double tol)
+{
+    cleanup_bidiagonal_auto(B, tol);
+}
+
+bool gkh_handle_diagonal_zeros(Matrix &U, Matrix &B, Matrix &V, double tol)
+{
+    return handle_diagonal_zeros(U, B, V, tol);
+}
+
+std::vector<GKHBlock> gkh_split_active_blocks(Matrix &B, int n, double tol)
+{
+    return split_active_blocks(B, n, tol);
+}
+
+void gkh_one_block_step(Matrix &U, Matrix &B, Matrix &V, int l, int r)
+{
+    one_block_step(U, B, V, l, r);
+}
+
+void gkh_finalize_result(Matrix &U, Matrix &B, Matrix &V, double tol)
+{
+    gkh_cleanup_bidiagonal_auto(B, tol);
+    for (int i = 0; i < B.cols() - 1; ++i)
+    {
+        B.at(i, i + 1) = 0.0;
+    }
+    make_nonnegative_and_sort(U, B, V);
+}
+
 // 从“上二对角矩阵 B”出发执行 Golub-Kahan SVD 迭代（改进版）：
 // - 输入输出满足 A = U * B * V^T 不变；
 // - 迭代中自动分块、处理对角近零、并在每个活动块上做 bulge chasing；
@@ -717,15 +744,15 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         profile.iter_count++;
 
         double t0 = now_ms();
-        cleanup_bidiagonal_auto(B, tol);
+        gkh_cleanup_bidiagonal_auto(B, tol);
         profile.cleanup_ms += now_ms() - t0;
 
         t0 = now_ms();
-        handle_diagonal_zeros(U, B, V, tol);
+        gkh_handle_diagonal_zeros(U, B, V, tol);
         profile.zero_ms += now_ms() - t0;
 
         t0 = now_ms();
-        std::vector<Block> blocks = split_active_blocks(B, n, tol);
+        std::vector<GKHBlock> blocks = gkh_split_active_blocks(B, n, tol);
         profile.split_ms += now_ms() - t0;
 
         int nontrivial_blocks = 0;
@@ -804,14 +831,14 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
 #pragma omp parallel for schedule(static)
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
         }
         else
         {
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
         }
 #elif SVD_PARALLEL_MODE == 2
@@ -820,14 +847,14 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
 #pragma omp parallel for schedule(dynamic, 1)
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
         }
         else
         {
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
         }
 #elif SVD_PARALLEL_MODE == 3
@@ -836,14 +863,14 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
 #pragma omp parallel for schedule(guided, 1)
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
         }
         else
         {
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
         }
 #elif SVD_PARALLEL_MODE == 4
@@ -855,7 +882,7 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         {
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
         }
 #elif SVD_PARALLEL_MODE == 5
@@ -867,13 +894,13 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         {
             for (int task_id = 0; task_id < task_count; ++task_id)
             {
-                one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+                gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
             }
         }
 #else
         for (int task_id = 0; task_id < task_count; ++task_id)
         {
-            one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
+            gkh_one_block_step(U, B, V, tasks[task_id].l, tasks[task_id].r);
         }
 #endif
 
@@ -881,7 +908,7 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
     }
 
     double t0 = now_ms();
-    cleanup_bidiagonal_auto(B, tol);
+    gkh_cleanup_bidiagonal_auto(B, tol);
     for (int i = 0; i < n - 1; ++i)
     {
         B.at(i, i + 1) = 0.0;
