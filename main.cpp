@@ -1,6 +1,9 @@
 #include "matrix.h"
 #include "gkh.h"
 #include "bidiagonalization.h"
+#ifdef USE_CUDA_BIDIAG
+#include "bidiagonalization_gpu.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -111,7 +114,8 @@ static bool nonnegative_diag(const Matrix &S)
 }
 
 static bool run_case(const std::string &name, const Matrix &A,
-                     double &sum_bidiag_ms, double &sum_gkh_ms)
+                     double &sum_bidiag_ms, double &sum_gkh_ms,
+                     const std::string &impl)
 {
     std::cout << "=== " << name << " ===\n";
 
@@ -119,8 +123,24 @@ static bool run_case(const std::string &name, const Matrix &A,
 
     Matrix U, V;
 
+    #ifdef USE_CUDA_BIDIAG
+    GpuBidiagStats gpu_stats;
+    #endif
+
     const auto t_beg_bidiag = Clock::now();
-    Matrix B = to_bidiagonal(A, U, V);
+
+    Matrix B;
+    #ifdef USE_CUDA_BIDIAG
+    if (impl == "gpu_kernel")
+    {
+        B = to_bidiagonal_gpu_kernel(A, U, V, &gpu_stats);
+    }
+    else
+    #endif
+    {
+        B = to_bidiagonal(A, U, V);
+    }
+
     const auto t_end_bidiag = Clock::now();
 
     const auto t_beg_gkh = Clock::now();
@@ -151,7 +171,16 @@ static bool run_case(const std::string &name, const Matrix &A,
     std::cout << "  nonnegative diagonal      : " << (ok_nonneg ? "yes" : "no") << "\n";
     std::cout << "  time bidiagonalization(ms): " << time_bidiag_ms << "\n";
     std::cout << "  time gkh iteration(ms)    : " << time_gkh_ms << "\n";
-
+    #ifdef USE_CUDA_BIDIAG
+    if (impl == "gpu_kernel")
+    {
+        std::cout << "  gpu total inside(ms)      : " << gpu_stats.total_ms << "\n";
+        std::cout << "  gpu H2D memcpy(ms)        : " << gpu_stats.h2d_ms << "\n";
+        std::cout << "  gpu D2H memcpy(ms)        : " << gpu_stats.d2h_ms << "\n";
+        std::cout << "  gpu kernel time(ms)       : " << gpu_stats.kernel_ms << "\n";
+        std::cout << "  gpu other overhead(ms)    : " << gpu_stats.other_ms << "\n";
+    }
+    #endif
     const double tol_recon_rel = 1e-8;
     const double tol_orth = 1e-7;
     const double tol_diag = 1e-10;
@@ -170,7 +199,43 @@ int main(int argc, char **argv)
     SetConsoleOutputCP(65001);
 #endif
 
-    const long long base_seed = (argc >= 2) ? std::stoll(argv[1]) : 20260408LL;
+    long long base_seed = 20260408LL;
+    std::string impl = "cpu";
+
+    for (int i = 1; i < argc; ++i)
+    {
+        std::string arg = argv[i];
+
+        if (arg == "--impl" && i + 1 < argc)
+        {
+            impl = argv[++i];
+        }
+        else
+        {
+            base_seed = std::stoll(arg);
+        }
+    }
+
+    #ifndef USE_CUDA_BIDIAG
+    if (impl != "cpu")
+    {
+        std::cerr << "This executable was built without CUDA support. Use --impl cpu.\n";
+        return 1;
+    }
+    #endif
+
+    std::cout << "实现版本: " << impl << "\n";
+    #ifdef USE_CUDA_BIDIAG
+    if (impl == "gpu_kernel")
+    {
+        using Clock = std::chrono::high_resolution_clock;
+        const auto t0 = Clock::now();
+        cuda_bidiag_warmup();
+        const auto t1 = Clock::now();
+        const double warmup_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cout << "CUDA warmup/context init(ms): " << warmup_ms << "\n";
+    }
+    #endif
 
     int total = 0;
     int passed = 0;
@@ -206,7 +271,7 @@ int main(int argc, char **argv)
         A.at(4, 3) = 2.0;
         A.at(4, 4) = 4.0;
         ++total;
-        if (run_case("固定值 5x5", A, sum_bidiag_ms, sum_gkh_ms))
+        if (run_case("固定值 5x5", A, sum_bidiag_ms, sum_gkh_ms, impl))
         {
             ++passed;
         }
@@ -216,7 +281,7 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(8, 8, -3.0, 3.0, base_seed + 1);
         ++total;
-        if (run_case("随机 8x8", A, sum_bidiag_ms, sum_gkh_ms))
+        if (run_case("随机 8x8", A, sum_bidiag_ms, sum_gkh_ms, impl))
         {
             ++passed;
         }
@@ -231,7 +296,7 @@ int main(int argc, char **argv)
             A.at(i, 2) = A.at(i, 0) + 1e-8 * (i + 1);
         }
         ++total;
-        if (run_case("近秩亏损 10x8", A, sum_bidiag_ms, sum_gkh_ms))
+        if (run_case("近秩亏损 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl))
         {
             ++passed;
         }
@@ -241,7 +306,7 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(10, 8, -4.0, 4.0, base_seed + 3);
         ++total;
-        if (run_case("随机 10x8", A, sum_bidiag_ms, sum_gkh_ms))
+        if (run_case("随机 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl))
         {
             ++passed;
         }
@@ -251,7 +316,7 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(1000, 1000, -1.0, 1.0, base_seed + 4);
         ++total;
-        if (run_case("随机 1000x1000", A, sum_bidiag_ms, sum_gkh_ms))
+        if (run_case("随机 1000x1000", A, sum_bidiag_ms, sum_gkh_ms, impl))
         {
             ++passed;
         }
