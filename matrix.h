@@ -19,6 +19,10 @@ public:
 
     int rows() const { return rows_; }
     int cols() const { return cols_; }
+    double *data() { return data_.data(); }
+    const double *data() const { return data_.data(); }
+    int size() const { return rows_ * cols_; }
+    int leading_dim() const { return cols_; }
 
     // 矩阵加法
     Matrix operator+(const Matrix &other) const
