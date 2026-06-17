@@ -1,0 +1,7 @@
+实现版本: cpu
+[bench] impl=cpu n=512 repeat=3 full_svd=0 verify=1
+[bench-verify] rep=0 rel_recon=4.22212e-15 orth_u=7.34678e-14 orth_v=7.45803e-14 bidiag_structure_err=0 pass=1
+[bench-run] rep=0 bidiag_ms=182.514 gkh_ms=0 total_ms=182.514
+[bench-run] rep=1 bidiag_ms=217.959 gkh_ms=0 total_ms=217.959
+[bench-run] rep=2 bidiag_ms=194.753 gkh_ms=0 total_ms=194.753
+[bench-summary] impl=cpu n=512 repeat=3 avg_bidiag_ms=198.408 avg_gkh_ms=0 avg_total_ms=198.408 pass=1

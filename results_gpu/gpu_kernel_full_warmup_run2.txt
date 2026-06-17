@@ -1,0 +1,97 @@
+实现版本: gpu_kernel
+CUDA warmup/context init(ms): 248.036
+=== 固定值 5x5 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 3.87069e-12
+  relative recon error      : 2.76668e-13
+  ||U^T U-I||_F             : 1.63847e-15
+  ||V^T V-I||_F             : 1.44025e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 2.4068
+  time gkh iteration(ms)    : 0.0275
+  gpu total inside(ms)      : 2.4044
+  gpu H2D memcpy(ms)        : 0.3037
+  gpu D2H memcpy(ms)        : 0.2157
+  gpu kernel time(ms)       : 1.01072
+  gpu other overhead(ms)    : 0.87428
+  结果: PASS
+
+=== 随机 8x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.46469e-14
+  relative recon error      : 9.28211e-16
+  ||U^T U-I||_F             : 2.37025e-15
+  ||V^T V-I||_F             : 2.00491e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 3.4179
+  time gkh iteration(ms)    : 0.0296
+  gpu total inside(ms)      : 3.4174
+  gpu H2D memcpy(ms)        : 0.8098
+  gpu D2H memcpy(ms)        : 0.232
+  gpu kernel time(ms)       : 0.923392
+  gpu other overhead(ms)    : 1.45221
+  结果: PASS
+
+=== 近秩亏损 10x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 9.88086e-15
+  relative recon error      : 7.97801e-16
+  ||U^T U-I||_F             : 2.26944e-15
+  ||V^T V-I||_F             : 1.62815e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 4.1039
+  time gkh iteration(ms)    : 0.0185
+  gpu total inside(ms)      : 4.103
+  gpu H2D memcpy(ms)        : 0.3079
+  gpu D2H memcpy(ms)        : 0.2869
+  gpu kernel time(ms)       : 0.993088
+  gpu other overhead(ms)    : 2.51511
+  结果: PASS
+
+=== 随机 10x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.27373e-12
+  relative recon error      : 5.84626e-14
+  ||U^T U-I||_F             : 2.24227e-15
+  ||V^T V-I||_F             : 1.54331e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 2.9286
+  time gkh iteration(ms)    : 0.0244
+  gpu total inside(ms)      : 2.928
+  gpu H2D memcpy(ms)        : 0.302
+  gpu D2H memcpy(ms)        : 0.2498
+  gpu kernel time(ms)       : 1.02426
+  gpu other overhead(ms)    : 1.35194
+  结果: PASS
+
+=== 随机 1000x1000 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 2.06451e-10
+  relative recon error      : 3.57173e-13
+  ||U^T U-I||_F             : 2.32795e-13
+  ||V^T V-I||_F             : 2.32245e-13
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 535.947
+  time gkh iteration(ms)    : 6923.12
+  gpu total inside(ms)      : 535.942
+  gpu H2D memcpy(ms)        : 16.6526
+  gpu D2H memcpy(ms)        : 32.2673
+  gpu kernel time(ms)       : 253.099
+  gpu other overhead(ms)    : 233.923
+  结果: PASS
+
+==============================
+随机种子基值: 20260408
+总上二对角化耗时(ms): 548.804
+总GKH迭代耗时(ms): 6923.22
+通过: 5 / 5

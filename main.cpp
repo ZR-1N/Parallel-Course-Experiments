@@ -85,6 +85,22 @@ static double diagonal_structure_error(const Matrix &S)
     return max_abs;
 }
 
+static double bidiagonal_structure_error(const Matrix &B)
+{
+    double max_abs = 0.0;
+    for (int i = 0; i < B.rows(); ++i)
+    {
+        for (int j = 0; j < B.cols(); ++j)
+        {
+            if (j != i && j != i + 1)
+            {
+                max_abs = std::max(max_abs, std::fabs(B.at(i, j)));
+            }
+        }
+    }
+    return max_abs;
+}
+
 static double order_error(const Matrix &S)
 {
     const int n = S.cols();
@@ -123,9 +139,9 @@ static bool run_case(const std::string &name, const Matrix &A,
 
     Matrix U, V;
 
-    #ifdef USE_CUDA_BIDIAG
+#ifdef USE_CUDA_BIDIAG
     GpuBidiagStats gpu_stats;
-    #endif
+#endif
 
     const auto t_beg_bidiag = Clock::now();
 
@@ -134,6 +150,10 @@ static bool run_case(const std::string &name, const Matrix &A,
     if (impl == "gpu_kernel")
     {
         B = to_bidiagonal_gpu_kernel(A, U, V, &gpu_stats);
+    }
+    else if (impl == "gpu_cublas")
+    {
+        B = to_bidiagonal_gpu_cublas(A, U, V, &gpu_stats);
     }
     else
     #endif
@@ -172,7 +192,7 @@ static bool run_case(const std::string &name, const Matrix &A,
     std::cout << "  time bidiagonalization(ms): " << time_bidiag_ms << "\n";
     std::cout << "  time gkh iteration(ms)    : " << time_gkh_ms << "\n";
     #ifdef USE_CUDA_BIDIAG
-    if (impl == "gpu_kernel")
+    if (impl == "gpu_kernel" || impl == "gpu_cublas")
     {
         std::cout << "  gpu total inside(ms)      : " << gpu_stats.total_ms << "\n";
         std::cout << "  gpu H2D memcpy(ms)        : " << gpu_stats.h2d_ms << "\n";
@@ -193,6 +213,195 @@ static bool run_case(const std::string &name, const Matrix &A,
     return pass;
 }
 
+static bool run_bench_case(int n,
+                           long long base_seed,
+                           int repeat,
+                           bool full_svd,
+                           bool verify,
+                           const std::string &impl)
+{
+    std::cout << "[bench] impl=" << impl
+              << " n=" << n
+              << " repeat=" << repeat
+              << " full_svd=" << (full_svd ? 1 : 0)
+              << " verify=" << (verify ? 1 : 0)
+              << "\n";
+
+    using Clock = std::chrono::high_resolution_clock;
+
+    double sum_bidiag_ms = 0.0;
+    double sum_gkh_ms = 0.0;
+    double sum_total_ms = 0.0;
+
+    double sum_gpu_total_ms = 0.0;
+    double sum_gpu_h2d_ms = 0.0;
+    double sum_gpu_d2h_ms = 0.0;
+    double sum_gpu_kernel_ms = 0.0;
+    double sum_gpu_other_ms = 0.0;
+
+    bool all_pass = true;
+
+    for (int rep = 0; rep < repeat; ++rep)
+    {
+        Matrix A = Matrix::random(n, n, -1.0, 1.0, base_seed + 1000 + rep);
+
+        Matrix U, V;
+
+#ifdef USE_CUDA_BIDIAG
+        GpuBidiagStats gpu_stats;
+#endif
+
+        const auto t_beg_bidiag = Clock::now();
+
+        Matrix B;
+#ifdef USE_CUDA_BIDIAG
+        if (impl == "gpu_kernel")
+        {
+            B = to_bidiagonal_gpu_kernel(A, U, V, &gpu_stats);
+        }
+        else if (impl == "gpu_cublas")
+        {
+            B = to_bidiagonal_gpu_cublas(A, U, V, &gpu_stats);
+        }
+        else
+#endif
+        {
+            B = to_bidiagonal(A, U, V);
+        }
+
+        const auto t_end_bidiag = Clock::now();
+
+        double gkh_ms = 0.0;
+        bool converged = true;
+
+        if (full_svd)
+        {
+            const auto t_beg_gkh = Clock::now();
+            converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12);
+            const auto t_end_gkh = Clock::now();
+            gkh_ms = std::chrono::duration<double, std::milli>(t_end_gkh - t_beg_gkh).count();
+        }
+
+        const double bidiag_ms =
+            std::chrono::duration<double, std::milli>(t_end_bidiag - t_beg_bidiag).count();
+
+        bool pass = true;
+
+        // 为避免大规模重复矩阵乘法过慢，只在第 1 次 repeat 做 correctness check。
+        if (verify && rep == 0)
+        {
+            const double err_recon = reconstruction_error(A, U, B, V);
+            const double err_recon_rel = err_recon / (fro_norm(A) + 1.0);
+            const double err_u = orth_error(U);
+            const double err_v = orth_error(V);
+
+            if (full_svd)
+            {
+                const double err_diag = diagonal_structure_error(B);
+                const double err_order = order_error(B);
+                const bool ok_nonneg = nonnegative_diag(B);
+
+                pass = converged &&
+                       (err_recon_rel < 1e-8) &&
+                       (err_u < 1e-7) &&
+                       (err_v < 1e-7) &&
+                       (err_diag < 1e-10) &&
+                       (err_order < 1e-12) &&
+                       ok_nonneg;
+
+                std::cout << "[bench-verify] rep=" << rep
+                          << " rel_recon=" << err_recon_rel
+                          << " orth_u=" << err_u
+                          << " orth_v=" << err_v
+                          << " diag_err=" << err_diag
+                          << " order_err=" << err_order
+                          << " nonneg=" << (ok_nonneg ? 1 : 0)
+                          << " converged=" << (converged ? 1 : 0)
+                          << " pass=" << (pass ? 1 : 0)
+                          << "\n";
+            }
+            else
+            {
+                const double err_bidiag = bidiagonal_structure_error(B);
+
+                pass = (err_recon_rel < 1e-8) &&
+                       (err_u < 1e-7) &&
+                       (err_v < 1e-7) &&
+                       (err_bidiag < 1e-10);
+
+                std::cout << "[bench-verify] rep=" << rep
+                          << " rel_recon=" << err_recon_rel
+                          << " orth_u=" << err_u
+                          << " orth_v=" << err_v
+                          << " bidiag_structure_err=" << err_bidiag
+                          << " pass=" << (pass ? 1 : 0)
+                          << "\n";
+            }
+        }
+
+        all_pass = all_pass && pass;
+
+        const double total_ms = bidiag_ms + gkh_ms;
+
+        sum_bidiag_ms += bidiag_ms;
+        sum_gkh_ms += gkh_ms;
+        sum_total_ms += total_ms;
+
+#ifdef USE_CUDA_BIDIAG
+        if (impl == "gpu_kernel" || impl == "gpu_cublas")
+        {
+            sum_gpu_total_ms += gpu_stats.total_ms;
+            sum_gpu_h2d_ms += gpu_stats.h2d_ms;
+            sum_gpu_d2h_ms += gpu_stats.d2h_ms;
+            sum_gpu_kernel_ms += gpu_stats.kernel_ms;
+            sum_gpu_other_ms += gpu_stats.other_ms;
+        }
+#endif
+
+        std::cout << "[bench-run] rep=" << rep
+                  << " bidiag_ms=" << bidiag_ms
+                  << " gkh_ms=" << gkh_ms
+                  << " total_ms=" << total_ms;
+
+#ifdef USE_CUDA_BIDIAG
+        if (impl == "gpu_kernel" || impl == "gpu_cublas")
+        {
+            std::cout << " gpu_total_ms=" << gpu_stats.total_ms
+                      << " gpu_h2d_ms=" << gpu_stats.h2d_ms
+                      << " gpu_d2h_ms=" << gpu_stats.d2h_ms
+                      << " gpu_kernel_ms=" << gpu_stats.kernel_ms
+                      << " gpu_other_ms=" << gpu_stats.other_ms;
+        }
+#endif
+
+        std::cout << "\n";
+    }
+
+    const double inv = 1.0 / repeat;
+
+    std::cout << "[bench-summary] impl=" << impl
+              << " n=" << n
+              << " repeat=" << repeat
+              << " avg_bidiag_ms=" << sum_bidiag_ms * inv
+              << " avg_gkh_ms=" << sum_gkh_ms * inv
+              << " avg_total_ms=" << sum_total_ms * inv;
+
+#ifdef USE_CUDA_BIDIAG
+    if (impl == "gpu_kernel" || impl == "gpu_cublas")
+    {
+        std::cout << " avg_gpu_total_ms=" << sum_gpu_total_ms * inv
+                  << " avg_gpu_h2d_ms=" << sum_gpu_h2d_ms * inv
+                  << " avg_gpu_d2h_ms=" << sum_gpu_d2h_ms * inv
+                  << " avg_gpu_kernel_ms=" << sum_gpu_kernel_ms * inv
+                  << " avg_gpu_other_ms=" << sum_gpu_other_ms * inv;
+    }
+#endif
+
+    std::cout << " pass=" << (all_pass ? 1 : 0) << "\n";
+
+    return all_pass;
+}
+
 int main(int argc, char **argv)
 {
 #ifdef _WIN32
@@ -201,6 +410,11 @@ int main(int argc, char **argv)
 
     long long base_seed = 20260408LL;
     std::string impl = "cpu";
+    std::string mode = "check";
+    int bench_n = 1000;
+    int repeat = 1;
+    bool full_svd = false;
+    bool verify = true;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -210,23 +424,63 @@ int main(int argc, char **argv)
         {
             impl = argv[++i];
         }
+        else if (arg == "--mode" && i + 1 < argc)
+        {
+            mode = argv[++i];
+        }
+        else if (arg == "--n" && i + 1 < argc)
+        {
+            bench_n = std::stoi(argv[++i]);
+        }
+        else if (arg == "--repeat" && i + 1 < argc)
+        {
+            repeat = std::stoi(argv[++i]);
+        }
+    else if (arg == "--full-svd" && i + 1 < argc)
+        {
+            full_svd = (std::stoi(argv[++i]) != 0);
+        }
+        else if (arg == "--verify" && i + 1 < argc)
+        {
+            verify = (std::stoi(argv[++i]) != 0);
+        }
         else
         {
             base_seed = std::stoll(arg);
         }
     }
 
-    #ifndef USE_CUDA_BIDIAG
+#ifdef USE_CUDA_BIDIAG
+    if (impl != "cpu" && impl != "gpu_kernel" && impl != "gpu_cublas")
+    {
+        std::cerr << "Unknown impl: " << impl << "\n";
+        std::cerr << "Available impl: cpu, gpu_kernel, gpu_cublas\n";
+        return 1;
+    }
+#else
     if (impl != "cpu")
     {
         std::cerr << "This executable was built without CUDA support. Use --impl cpu.\n";
         return 1;
     }
-    #endif
+#endif
+
+    if (mode != "check" && mode != "bench")
+    {
+        std::cerr << "Unknown mode: " << mode << "\n";
+        std::cerr << "Available mode: check, bench\n";
+        return 1;
+    }
+
+    if (bench_n <= 0 || repeat <= 0)
+    {
+        std::cerr << "Invalid bench parameters: n and repeat must be positive.\n";
+        return 1;
+    }
 
     std::cout << "实现版本: " << impl << "\n";
-    #ifdef USE_CUDA_BIDIAG
-    if (impl == "gpu_kernel")
+#ifdef USE_CUDA_BIDIAG
+    if (impl == "gpu_kernel" || impl == "gpu_cublas")
     {
         using Clock = std::chrono::high_resolution_clock;
         const auto t0 = Clock::now();
@@ -235,7 +489,13 @@ int main(int argc, char **argv)
         const double warmup_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         std::cout << "CUDA warmup/context init(ms): " << warmup_ms << "\n";
     }
-    #endif
+#endif
+
+    if (mode == "bench")
+    {
+        const bool ok = run_bench_case(bench_n, base_seed, repeat, full_svd, verify, impl);
+        return ok ? 0 : 1;
+    }
 
     int total = 0;
     int passed = 0;

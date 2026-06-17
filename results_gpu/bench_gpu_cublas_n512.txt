@@ -1,0 +1,8 @@
+实现版本: gpu_cublas
+CUDA warmup/context init(ms): 98.6103
+[bench] impl=gpu_cublas n=512 repeat=3 full_svd=0 verify=1
+[bench-verify] rep=0 rel_recon=3.55617e-15 orth_u=6.36583e-14 orth_v=6.26103e-14 bidiag_structure_err=0 pass=1
+[bench-run] rep=0 bidiag_ms=222.523 gkh_ms=0 total_ms=222.523 gpu_total_ms=222.519 gpu_h2d_ms=6.8777 gpu_d2h_ms=14.819 gpu_kernel_ms=105.48 gpu_other_ms=95.3426
+[bench-run] rep=1 bidiag_ms=218.129 gkh_ms=0 total_ms=218.129 gpu_total_ms=218.126 gpu_h2d_ms=6.6283 gpu_d2h_ms=14.5771 gpu_kernel_ms=96.3822 gpu_other_ms=100.539
+[bench-run] rep=2 bidiag_ms=227.06 gkh_ms=0 total_ms=227.06 gpu_total_ms=227.055 gpu_h2d_ms=7.8144 gpu_d2h_ms=16.6506 gpu_kernel_ms=102.523 gpu_other_ms=100.067
+[bench-summary] impl=gpu_cublas n=512 repeat=3 avg_bidiag_ms=222.571 avg_gkh_ms=0 avg_total_ms=222.571 avg_gpu_total_ms=222.567 avg_gpu_h2d_ms=7.1068 avg_gpu_d2h_ms=15.3489 avg_gpu_kernel_ms=101.462 avg_gpu_other_ms=98.6495 pass=1

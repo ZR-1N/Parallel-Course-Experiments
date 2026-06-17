@@ -1,0 +1,5 @@
+实现版本: cpu
+[bench] impl=cpu n=1000 repeat=1 full_svd=1 verify=1
+[bench-verify] rep=0 rel_recon=3.51826e-13 orth_u=2.50948e-13 orth_v=2.46897e-13 diag_err=0 order_err=0 nonneg=1 converged=1 pass=1
+[bench-run] rep=0 bidiag_ms=2173.58 gkh_ms=6770.01 total_ms=8943.59
+[bench-summary] impl=cpu n=1000 repeat=1 avg_bidiag_ms=2173.58 avg_gkh_ms=6770.01 avg_total_ms=8943.59 pass=1

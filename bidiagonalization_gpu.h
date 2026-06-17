@@ -15,3 +15,6 @@ void cuda_bidiag_warmup();
 
 Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
                                 GpuBidiagStats *stats = nullptr);
+
+Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
+                                GpuBidiagStats *stats = nullptr);

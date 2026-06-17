@@ -1,6 +1,7 @@
 #include "bidiagonalization_gpu.h"
 
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 
 #include <algorithm>
 #include <chrono>
@@ -22,10 +23,27 @@ static void cuda_check(cudaError_t err, const char *expr, const char *file, int 
 
 #define CUDA_CHECK(expr) cuda_check((expr), #expr, __FILE__, __LINE__)
 
+static void cublas_check(cublasStatus_t stat, const char *expr, const char *file, int line)
+{
+    if (stat != CUBLAS_STATUS_SUCCESS)
+    {
+        throw std::runtime_error(std::string("cuBLAS error code: ") +
+                                 std::to_string(static_cast<int>(stat)) +
+                                 " at " + file + ":" + std::to_string(line) +
+                                 " expr=" + expr);
+    }
+}
+
+#define CUBLAS_CHECK(expr) cublas_check((expr), #expr, __FILE__, __LINE__)
+
 void cuda_bidiag_warmup()
 {
     CUDA_CHECK(cudaSetDevice(0));
     CUDA_CHECK(cudaFree(0));
+
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+    CUBLAS_CHECK(cublasDestroy(handle));
 }
 
 #define CUDA_LAUNCH_TIMED(kernel_ms_acc, ...)                                  \
@@ -453,6 +471,322 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
                         - local_stats.h2d_ms
                         - local_stats.d2h_ms
                         - local_stats.kernel_ms;
+
+    if (local_stats.other_ms < 0.0 && local_stats.other_ms > -1e-6)
+    {
+        local_stats.other_ms = 0.0;
+    }
+
+    if (stats)
+    {
+        *stats = local_stats;
+    }
+
+    return B;
+}
+
+Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
+                                GpuBidiagStats *stats)
+{
+    if (A.rows() < A.cols())
+    {
+        throw std::invalid_argument("to_bidiagonal_gpu_cublas: requires m >= n");
+    }
+
+    using Clock = std::chrono::high_resolution_clock;
+    const auto t_total_beg = Clock::now();
+
+    GpuBidiagStats local_stats;
+
+    const int m = A.rows();
+    const int n = A.cols();
+
+    Matrix B = A;
+
+    U = Matrix(m, m, 0.0);
+    for (int i = 0; i < m; ++i)
+    {
+        U.at(i, i) = 1.0;
+    }
+
+    V = Matrix(n, n, 0.0);
+    for (int i = 0; i < n; ++i)
+    {
+        V.at(i, i) = 1.0;
+    }
+
+    double *d_B = nullptr;
+    double *d_U = nullptr;
+    double *d_V = nullptr;
+    double *d_vec = nullptr;
+    double *d_work = nullptr;
+
+    const size_t bytes_B = static_cast<size_t>(m) * n * sizeof(double);
+    const size_t bytes_U = static_cast<size_t>(m) * m * sizeof(double);
+    const size_t bytes_V = static_cast<size_t>(n) * n * sizeof(double);
+
+    int max_dim = std::max(m, n);
+    if (max_dim < 1)
+    {
+        max_dim = 1;
+    }
+
+    CUDA_CHECK(cudaMalloc(&d_B, bytes_B));
+    CUDA_CHECK(cudaMalloc(&d_U, bytes_U));
+    CUDA_CHECK(cudaMalloc(&d_V, bytes_V));
+    CUDA_CHECK(cudaMalloc(&d_vec, static_cast<size_t>(max_dim) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_work, static_cast<size_t>(max_dim) * sizeof(double)));
+
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+
+    local_stats.h2d_ms += timed_cuda_memcpy(d_B, B.data(), bytes_B, cudaMemcpyHostToDevice);
+    local_stats.h2d_ms += timed_cuda_memcpy(d_U, U.data(), bytes_U, cudaMemcpyHostToDevice);
+    local_stats.h2d_ms += timed_cuda_memcpy(d_V, V.data(), bytes_V, cudaMemcpyHostToDevice);
+
+    std::vector<double> h_tmp(max_dim, 0.0);
+    std::vector<double> h_v(max_dim, 0.0);
+
+    const int threads = 256;
+    const dim3 block2d(16, 16);
+
+    const double one = 1.0;
+    const double zero = 0.0;
+
+    for (int k = 0; k < n; ++k)
+    {
+        // ============================================================
+        // Left Householder
+        // B[k:m, k:n] -= beta * v * w^T, w = v^T * B[k:m, k:n]
+        // ============================================================
+        const int rows_left = m - k;
+        const int cols_left = n - k;
+
+        if (rows_left > 0)
+        {
+            const int grid_extract = (rows_left + threads - 1) / threads;
+            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                              extract_col_segment_kernel<<<grid_extract, threads>>>(
+                                  d_B, d_vec, n, k, k, rows_left));
+
+            local_stats.d2h_ms += timed_cuda_memcpy(h_tmp.data(), d_vec,
+                                                    static_cast<size_t>(rows_left) * sizeof(double),
+                                                    cudaMemcpyDeviceToHost);
+        }
+
+        const double norm_x = vector_norm_host(h_tmp, rows_left);
+
+        if (norm_x > 1e-14 && k < m - 1)
+        {
+            const double sigma = (h_tmp[0] >= 0.0 ? 1.0 : -1.0) * norm_x;
+
+            for (int i = 0; i < rows_left; ++i)
+            {
+                h_v[i] = h_tmp[i];
+            }
+            h_v[0] += sigma;
+
+            const double vTv = dot_host(h_v, rows_left);
+
+            if (vTv > 1e-28)
+            {
+                const double beta = 2.0 / vTv;
+                const double neg_beta = -beta;
+
+                local_stats.h2d_ms += timed_cuda_memcpy(d_vec, h_v.data(),
+                                                        static_cast<size_t>(rows_left) * sizeof(double),
+                                                        cudaMemcpyHostToDevice);
+
+                double *B_sub = d_B + static_cast<size_t>(k) * n + k;
+
+                // row-major B_sub(rows_left x cols_left)
+                // interpreted by cuBLAS as column-major B_sub^T(cols_left x rows_left), ld = n.
+                //
+                // w = v^T * B_sub
+                // 等价于 w = B_sub^T * v
+                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                  CUBLAS_CHECK(cublasDgemv(handle,
+                                                           CUBLAS_OP_N,
+                                                           cols_left, rows_left,
+                                                           &one,
+                                                           B_sub, n,
+                                                           d_vec, 1,
+                                                           &zero,
+                                                           d_work, 1)));
+
+                // B_sub <- B_sub - beta * v * w^T
+                // 在 column-major 转置视图下：
+                // B_sub^T <- B_sub^T - beta * w * v^T
+                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                  CUBLAS_CHECK(cublasDger(handle,
+                                                          cols_left, rows_left,
+                                                          &neg_beta,
+                                                          d_work, 1,
+                                                          d_vec, 1,
+                                                          B_sub, n)));
+
+                double *U_sub = d_U + k;
+
+                // wU = U[:, k:m] * v
+                // row-major U_sub(m x rows_left)
+                // cuBLAS 视图是 U_sub^T(rows_left x m)
+                // 因此 wU = (U_sub^T)^T * v
+                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                  CUBLAS_CHECK(cublasDgemv(handle,
+                                                           CUBLAS_OP_T,
+                                                           rows_left, m,
+                                                           &one,
+                                                           U_sub, m,
+                                                           d_vec, 1,
+                                                           &zero,
+                                                           d_work, 1)));
+
+                // U[:, k:m] <- U[:, k:m] - beta * wU * v^T
+                // 转置视图下：
+                // U_sub^T <- U_sub^T - beta * v * wU^T
+                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                  CUBLAS_CHECK(cublasDger(handle,
+                                                          rows_left, m,
+                                                          &neg_beta,
+                                                          d_vec, 1,
+                                                          d_work, 1,
+                                                          U_sub, m)));
+            }
+        }
+
+        if (k + 1 < m)
+        {
+            const int len_zero = m - (k + 1);
+            const int grid_zero = (len_zero + threads - 1) / threads;
+            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                              zero_col_below_kernel<<<grid_zero, threads>>>(d_B, n, k, m));
+        }
+
+        // ============================================================
+        // Right Householder
+        // B[k:m, k+1:n] -= beta * w * v^T, w = B[k:m, k+1:n] * v
+        // ============================================================
+        if (k < n - 2)
+        {
+            const int len = n - k - 1;
+            const int rows_right = m - k;
+
+            const int grid_extract = (len + threads - 1) / threads;
+            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                              extract_row_segment_kernel<<<grid_extract, threads>>>(
+                                  d_B, d_vec, n, k, k + 1, len));
+
+            local_stats.d2h_ms += timed_cuda_memcpy(h_tmp.data(), d_vec,
+                                                    static_cast<size_t>(len) * sizeof(double),
+                                                    cudaMemcpyDeviceToHost);
+
+            const double norm_y = vector_norm_host(h_tmp, len);
+
+            if (norm_y > 1e-14)
+            {
+                const double sigma = (h_tmp[0] >= 0.0 ? 1.0 : -1.0) * norm_y;
+
+                for (int j = 0; j < len; ++j)
+                {
+                    h_v[j] = h_tmp[j];
+                }
+                h_v[0] += sigma;
+
+                const double vTv = dot_host(h_v, len);
+
+                if (vTv > 1e-28)
+                {
+                    const double beta = 2.0 / vTv;
+                    const double neg_beta = -beta;
+
+                    local_stats.h2d_ms += timed_cuda_memcpy(d_vec, h_v.data(),
+                                                            static_cast<size_t>(len) * sizeof(double),
+                                                            cudaMemcpyHostToDevice);
+
+                    double *B_sub = d_B + static_cast<size_t>(k) * n + (k + 1);
+
+                    // w = B_sub * v
+                    // row-major B_sub(rows_right x len)
+                    // cuBLAS 视图是 B_sub^T(len x rows_right)
+                    // 因此 w = (B_sub^T)^T * v
+                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                      CUBLAS_CHECK(cublasDgemv(handle,
+                                                               CUBLAS_OP_T,
+                                                               len, rows_right,
+                                                               &one,
+                                                               B_sub, n,
+                                                               d_vec, 1,
+                                                               &zero,
+                                                               d_work, 1)));
+
+                    // B_sub <- B_sub - beta * w * v^T
+                    // 转置视图下：
+                    // B_sub^T <- B_sub^T - beta * v * w^T
+                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                      CUBLAS_CHECK(cublasDger(handle,
+                                                              len, rows_right,
+                                                              &neg_beta,
+                                                              d_vec, 1,
+                                                              d_work, 1,
+                                                              B_sub, n)));
+
+                    double *V_sub = d_V + (k + 1);
+
+                    // wV = V[:, k+1:n] * v
+                    // row-major V_sub(n x len)
+                    // cuBLAS 视图是 V_sub^T(len x n)
+                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                      CUBLAS_CHECK(cublasDgemv(handle,
+                                                               CUBLAS_OP_T,
+                                                               len, n,
+                                                               &one,
+                                                               V_sub, n,
+                                                               d_vec, 1,
+                                                               &zero,
+                                                               d_work, 1)));
+
+                    // V[:, k+1:n] <- V[:, k+1:n] - beta * wV * v^T
+                    // 转置视图下：
+                    // V_sub^T <- V_sub^T - beta * v * wV^T
+                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                      CUBLAS_CHECK(cublasDger(handle,
+                                                              len, n,
+                                                              &neg_beta,
+                                                              d_vec, 1,
+                                                              d_work, 1,
+                                                              V_sub, n)));
+                }
+            }
+
+            if (k + 2 < n)
+            {
+                const int len_zero = n - (k + 2);
+                const int grid_zero = (len_zero + threads - 1) / threads;
+                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                                  zero_row_after_kernel<<<grid_zero, threads>>>(d_B, n, k, n));
+            }
+        }
+    }
+
+    local_stats.d2h_ms += timed_cuda_memcpy(B.data(), d_B, bytes_B, cudaMemcpyDeviceToHost);
+    local_stats.d2h_ms += timed_cuda_memcpy(U.data(), d_U, bytes_U, cudaMemcpyDeviceToHost);
+    local_stats.d2h_ms += timed_cuda_memcpy(V.data(), d_V, bytes_V, cudaMemcpyDeviceToHost);
+
+    CUBLAS_CHECK(cublasDestroy(handle));
+
+    CUDA_CHECK(cudaFree(d_B));
+    CUDA_CHECK(cudaFree(d_U));
+    CUDA_CHECK(cudaFree(d_V));
+    CUDA_CHECK(cudaFree(d_vec));
+    CUDA_CHECK(cudaFree(d_work));
+
+    const auto t_total_end = Clock::now();
+    local_stats.total_ms = std::chrono::duration<double, std::milli>(t_total_end - t_total_beg).count();
+
+    local_stats.other_ms = local_stats.total_ms
+                         - local_stats.h2d_ms
+                         - local_stats.d2h_ms
+                         - local_stats.kernel_ms;
 
     if (local_stats.other_ms < 0.0 && local_stats.other_ms > -1e-6)
     {
