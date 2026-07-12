@@ -1,0 +1,9 @@
+GKH layout: tuv
+GKH U/V update: 1
+[gkh-special] case=zero_diagonal_chase gkh_layout=tuv converged=1 rel_recon=8.66341e-16 orth_u=5.40361e-16 orth_v=2.5298e-16 diag_err=0 order_err=0 nonneg=1 require_zero_chase=1 zero_chase_calls=1 pass=1
+[gkh-profile] mode=1 converged=1 outer_iterations=4 block_steps=3 left_rotations=8 right_rotations=8 total_rotations=16 zero_chase_calls=1 deflations=2 total_nontrivial_blocks=3 avg_nontrivial_blocks=0.75 iterations_with_multiple_blocks=0 multiple_block_ratio=0 max_nontrivial_blocks=1 avg_nontrivial_block_size=2.66667 max_block_size=3
+[gkh-special] case=already_diagonal gkh_layout=tuv converged=1 rel_recon=0 orth_u=0 orth_v=0 diag_err=0 order_err=0 nonneg=1 require_zero_chase=0 zero_chase_calls=0 pass=1
+[gkh-profile] mode=1 converged=1 outer_iterations=1 block_steps=0 left_rotations=0 right_rotations=0 total_rotations=0 zero_chase_calls=0 deflations=0 total_nontrivial_blocks=0 avg_nontrivial_blocks=0 iterations_with_multiple_blocks=0 multiple_block_ratio=0 max_nontrivial_blocks=0 avg_nontrivial_block_size=0 max_block_size=0
+[gkh-special] case=two_active_blocks gkh_layout=tuv converged=1 rel_recon=3.38301e-16 orth_u=7.9855e-16 orth_v=4.3195e-16 diag_err=0 order_err=0 nonneg=1 require_zero_chase=0 zero_chase_calls=0 pass=1
+[gkh-profile] mode=1 converged=1 outer_iterations=5 block_steps=8 left_rotations=14 right_rotations=14 total_rotations=28 zero_chase_calls=0 deflations=4 total_nontrivial_blocks=8 avg_nontrivial_blocks=1.6 iterations_with_multiple_blocks=4 multiple_block_ratio=0.8 max_nontrivial_blocks=2 avg_nontrivial_block_size=2.75 max_block_size=3
+[gkh-special-summary] gkh_layout=tuv pass=1

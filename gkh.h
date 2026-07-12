@@ -28,6 +28,40 @@ struct GKHProfile
     double split_ms = 0.0;
     double block_step_ms = 0.0;
     double finalize_ms = 0.0;
+    double transpose_in_ms = 0.0;
+    double transpose_out_ms = 0.0;
+
+    long long u_log_count = 0;
+    long long v_log_count = 0;
+    long long logical_log_bytes = 0;
+    long long allocated_log_bytes = 0;
+    long long log_bytes = 0;
+
+    double log_generation_ms = 0.0;
+    double replay_u_ms = 0.0;
+    double replay_v_ms = 0.0;
+    double replay_total_ms = 0.0;
+};
+
+enum class GKHLayout
+{
+    Normal,
+    TUV
+};
+
+enum class GKHAccumulation
+{
+    Immediate,
+    Deferred
+};
+
+struct GKHOptions
+{
+    GKHLayout layout = GKHLayout::Normal;
+    GKHAccumulation accumulation = GKHAccumulation::Immediate;
+    bool update_uv = true;
+    int replay_threads = 1;
+    int replay_tile_rows = 1;
 };
 
 // 在已上二对角化结果 A = U * B * V^T 上执行 GKH 迭代。
@@ -45,4 +79,5 @@ struct GKHProfile
 bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V,
                              int max_iter = 6000,
                              double tol = 1e-12,
-                             GKHProfile *profile = nullptr);
+                             GKHProfile *profile = nullptr,
+                             const GKHOptions &options = GKHOptions{});

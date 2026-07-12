@@ -3,6 +3,7 @@ setlocal
 
 nvcc -O2 -arch=sm_89 -std=c++17 ^
     -Xcompiler /O2 ^
+    -Xcompiler /openmp ^
     -Xcompiler /utf-8 ^
     -Xcompiler /EHsc ^
     -Xcompiler /DNOMINMAX ^

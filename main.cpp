@@ -10,6 +10,10 @@
 #include <cmath>
 #include <iostream>
 #include <string>
+#include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -129,9 +133,55 @@ static bool nonnegative_diag(const Matrix &S)
     return true;
 }
 
+static Matrix identity_matrix(int n)
+{
+    Matrix I(n, n, 0.0);
+    for (int i = 0; i < n; ++i)
+    {
+        I.at(i, i) = 1.0;
+    }
+    return I;
+}
+
 static bool valid_seed_policy(const std::string &seed_policy)
 {
     return seed_policy == "fixed" || seed_policy == "sequence";
+}
+
+static bool valid_gkh_layout(const std::string &gkh_layout)
+{
+    return gkh_layout == "normal" || gkh_layout == "tuv";
+}
+
+static bool valid_gkh_accum(const std::string &gkh_accum)
+{
+    return gkh_accum == "immediate" || gkh_accum == "deferred";
+}
+
+static GKHLayout parse_gkh_layout(const std::string &gkh_layout)
+{
+    return (gkh_layout == "tuv") ? GKHLayout::TUV : GKHLayout::Normal;
+}
+
+static GKHAccumulation parse_gkh_accum(const std::string &gkh_accum)
+{
+    return (gkh_accum == "deferred") ? GKHAccumulation::Deferred
+                                      : GKHAccumulation::Immediate;
+}
+
+static GKHOptions make_gkh_options(const std::string &gkh_layout,
+                                   bool gkh_uv_update,
+                                   const std::string &gkh_accum,
+                                   int replay_threads,
+                                   int replay_tile_rows)
+{
+    GKHOptions options;
+    options.layout = parse_gkh_layout(gkh_layout);
+    options.accumulation = parse_gkh_accum(gkh_accum);
+    options.update_uv = gkh_uv_update;
+    options.replay_threads = replay_threads;
+    options.replay_tile_rows = replay_tile_rows;
+    return options;
 }
 
 static long long bench_actual_seed(long long base_seed, int rep, const std::string &seed_policy)
@@ -191,7 +241,12 @@ static void print_gkh_profile_line(int rep,
               << " multiple_block_ratio=" << multiple_block_ratio
               << " max_nontrivial_blocks=" << profile.max_nontrivial_blocks
               << " avg_nontrivial_block_size=" << avg_nontrivial_block_size
-              << " max_block_size=" << profile.max_block_size;
+              << " max_block_size=" << profile.max_block_size
+              << " u_log_count=" << profile.u_log_count
+              << " v_log_count=" << profile.v_log_count
+              << " logical_log_bytes=" << profile.logical_log_bytes
+              << " allocated_log_bytes=" << profile.allocated_log_bytes
+              << " log_bytes=" << profile.log_bytes;
 
     if (profile.mode == 2)
     {
@@ -199,12 +254,23 @@ static void print_gkh_profile_line(int rep,
                                                profile.zero_handle_ms +
                                                profile.split_ms +
                                                profile.block_step_ms +
-                                               profile.finalize_ms;
+                                               profile.finalize_ms +
+                                               profile.transpose_in_ms +
+                                               profile.transpose_out_ms +
+                                               profile.replay_total_ms;
+        const double tuv_extra_ms = profile.transpose_in_ms + profile.transpose_out_ms;
         std::cout << " cleanup_ms=" << profile.cleanup_ms
                   << " zero_handle_ms=" << profile.zero_handle_ms
                   << " split_ms=" << profile.split_ms
                   << " block_step_ms=" << profile.block_step_ms
                   << " finalize_ms=" << profile.finalize_ms
+                  << " transpose_in_ms=" << profile.transpose_in_ms
+                  << " transpose_out_ms=" << profile.transpose_out_ms
+                  << " tuv_extra_ms=" << tuv_extra_ms
+                  << " log_generation_ms=" << profile.log_generation_ms
+                  << " replay_u_ms=" << profile.replay_u_ms
+                  << " replay_v_ms=" << profile.replay_v_ms
+                  << " replay_total_ms=" << profile.replay_total_ms
                   << " profiled_phase_total_ms=" << profiled_phase_total_ms;
     }
 
@@ -215,7 +281,12 @@ static bool run_case(const std::string &name, const Matrix &A,
                      double &sum_bidiag_ms, double &sum_gkh_ms,
                      const std::string &impl,
                      bool gpu_profile,
-                     int gkh_profile)
+                     int gkh_profile,
+                     const std::string &gkh_layout,
+                     bool gkh_uv_update,
+                     const std::string &gkh_accum,
+                     int replay_threads,
+                     int replay_tile_rows)
 {
     std::cout << "=== " << name << " ===\n";
 
@@ -250,9 +321,13 @@ static bool run_case(const std::string &name, const Matrix &A,
     GKHProfile gkh_stats;
     gkh_stats.mode = gkh_profile;
     GKHProfile *gkh_stats_ptr = (gkh_profile > 0) ? &gkh_stats : nullptr;
+    const GKHOptions gkh_options = make_gkh_options(gkh_layout, gkh_uv_update,
+                                                    gkh_accum, replay_threads,
+                                                    replay_tile_rows);
 
     const auto t_beg_gkh = Clock::now();
-    const bool converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12, gkh_stats_ptr);
+    const bool converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12,
+                                                   gkh_stats_ptr, gkh_options);
     const auto t_end_gkh = Clock::now();
 
     const double time_bidiag_ms = std::chrono::duration<double, std::milli>(t_end_bidiag - t_beg_bidiag).count();
@@ -280,6 +355,11 @@ static bool run_case(const std::string &name, const Matrix &A,
     std::cout << "  time bidiagonalization(ms): " << time_bidiag_ms << "\n";
     std::cout << "  time gkh iteration(ms)    : " << time_gkh_ms << "\n";
     std::cout << "  gkh profile mode          : " << gkh_profile << "\n";
+    std::cout << "  gkh layout                : " << gkh_layout << "\n";
+    std::cout << "  gkh uv update             : " << (gkh_uv_update ? 1 : 0) << "\n";
+    std::cout << "  gkh accumulation          : " << gkh_accum << "\n";
+    std::cout << "  replay threads            : " << replay_threads << "\n";
+    std::cout << "  replay tile rows          : " << replay_tile_rows << "\n";
     if (gkh_profile > 0)
     {
         print_gkh_profile_line(-1, 0, false, converged, gkh_stats);
@@ -322,14 +402,26 @@ static bool run_bench_case(int n,
                            const std::string &impl,
                            const std::string &seed_policy,
                            bool gpu_profile,
-                           int gkh_profile)
+                           int gkh_profile,
+                           const std::string &gkh_layout,
+                           bool gkh_uv_update,
+                           const std::string &gkh_accum,
+                           int replay_threads,
+                           int replay_tile_rows)
 {
+    const bool diagnostic_b_only = full_svd && !gkh_uv_update;
     std::cout << "[bench] impl=" << impl
               << " n=" << n
               << " repeat=" << repeat
               << " seed_policy=" << seed_policy
               << " gpu_profile=" << (gpu_profile ? 1 : 0)
               << " gkh_profile=" << gkh_profile
+              << " gkh_layout=" << gkh_layout
+              << " gkh_uv_update=" << (gkh_uv_update ? 1 : 0)
+              << " gkh_accum=" << gkh_accum
+              << " replay_threads=" << replay_threads
+              << " replay_tile_rows=" << replay_tile_rows
+              << " diagnostic_b_only=" << (diagnostic_b_only ? 1 : 0)
               << " full_svd=" << (full_svd ? 1 : 0)
               << " verify=" << (verify ? 1 : 0)
               << "\n";
@@ -383,15 +475,25 @@ static bool run_bench_case(int n,
         bool converged = true;
         GKHProfile gkh_stats;
         gkh_stats.mode = gkh_profile;
+        const GKHOptions gkh_options = make_gkh_options(gkh_layout, gkh_uv_update,
+                                                        gkh_accum, replay_threads,
+                                                        replay_tile_rows);
 
         if (full_svd)
         {
             GKHProfile *gkh_stats_ptr = (gkh_profile > 0) ? &gkh_stats : nullptr;
             const auto t_beg_gkh = Clock::now();
-            converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12, gkh_stats_ptr);
+            converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12,
+                                                gkh_stats_ptr, gkh_options);
             const auto t_end_gkh = Clock::now();
             gkh_ms = std::chrono::duration<double, std::milli>(t_end_gkh - t_beg_gkh).count();
 
+            if (diagnostic_b_only)
+            {
+                std::cout << "[gkh-diagnostic] rep=" << rep
+                          << " seed=" << actual_seed
+                          << " uv_updates_skipped=1\n";
+            }
             if (gkh_profile > 0)
             {
                 print_gkh_profile_line(rep, actual_seed, true, converged, gkh_stats);
@@ -478,6 +580,12 @@ static bool run_bench_case(int n,
                   << " seed=" << actual_seed
                   << " gpu_profile=" << (gpu_profile ? 1 : 0)
                   << " gkh_profile=" << gkh_profile
+                  << " gkh_layout=" << gkh_layout
+                  << " gkh_uv_update=" << (gkh_uv_update ? 1 : 0)
+                  << " gkh_accum=" << gkh_accum
+                  << " replay_threads=" << replay_threads
+                  << " replay_tile_rows=" << replay_tile_rows
+                  << " diagnostic_b_only=" << (diagnostic_b_only ? 1 : 0)
                   << " bidiag_ms=" << bidiag_ms
                   << " gkh_ms=" << gkh_ms
                   << " total_ms=" << total_ms;
@@ -511,6 +619,12 @@ static bool run_bench_case(int n,
               << " seed_policy=" << seed_policy
               << " gpu_profile=" << (gpu_profile ? 1 : 0)
               << " gkh_profile=" << gkh_profile
+              << " gkh_layout=" << gkh_layout
+              << " gkh_uv_update=" << (gkh_uv_update ? 1 : 0)
+              << " gkh_accum=" << gkh_accum
+              << " replay_threads=" << replay_threads
+              << " replay_tile_rows=" << replay_tile_rows
+              << " diagnostic_b_only=" << (diagnostic_b_only ? 1 : 0)
               << " avg_bidiag_ms=" << sum_bidiag_ms * inv
               << " avg_gkh_ms=" << sum_gkh_ms * inv
               << " avg_total_ms=" << sum_total_ms * inv;
@@ -538,6 +652,127 @@ static bool run_bench_case(int n,
     return all_pass;
 }
 
+static bool run_one_gkh_special_case(const std::string &name,
+                                     const Matrix &initial_B,
+                                     const std::string &gkh_layout,
+                                     const std::string &gkh_accum,
+                                     int replay_threads,
+                                     int replay_tile_rows,
+                                     bool require_zero_chase)
+{
+    Matrix U = identity_matrix(initial_B.rows());
+    Matrix V = identity_matrix(initial_B.cols());
+    Matrix B = initial_B;
+    const Matrix A = initial_B;
+
+    GKHProfile profile;
+    profile.mode = 1;
+    const GKHOptions options = make_gkh_options(gkh_layout, true, gkh_accum,
+                                                replay_threads, replay_tile_rows);
+
+    const bool converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12,
+                                                   &profile, options);
+
+    const double err_recon = reconstruction_error(A, U, B, V);
+    const double err_recon_rel = err_recon / (fro_norm(A) + 1.0);
+    const double err_u = orth_error(U);
+    const double err_v = orth_error(V);
+    const double err_diag = diagonal_structure_error(B);
+    const double err_order = order_error(B);
+    const bool ok_nonneg = nonnegative_diag(B);
+
+    const bool pass = converged &&
+                      (err_recon_rel < 1e-8) &&
+                      (err_u < 1e-7) &&
+                      (err_v < 1e-7) &&
+                      (err_diag < 1e-10) &&
+                      (err_order < 1e-12) &&
+                      ok_nonneg &&
+                      (!require_zero_chase || profile.zero_chase_calls > 0) &&
+                      (gkh_accum != "deferred" ||
+                       (profile.u_log_count == profile.left_rotations &&
+                        profile.v_log_count == profile.right_rotations)) &&
+                      (!require_zero_chase || gkh_accum != "deferred" ||
+                       (profile.u_log_count > 0 && profile.v_log_count > 0));
+
+    std::cout << "[gkh-special] case=" << name
+              << " gkh_layout=" << gkh_layout
+              << " gkh_accum=" << gkh_accum
+              << " replay_threads=" << replay_threads
+              << " replay_tile_rows=" << replay_tile_rows
+              << " converged=" << (converged ? 1 : 0)
+              << " rel_recon=" << err_recon_rel
+              << " orth_u=" << err_u
+              << " orth_v=" << err_v
+              << " diag_err=" << err_diag
+              << " order_err=" << err_order
+              << " nonneg=" << (ok_nonneg ? 1 : 0)
+              << " require_zero_chase=" << (require_zero_chase ? 1 : 0)
+              << " zero_chase_calls=" << profile.zero_chase_calls
+              << " pass=" << (pass ? 1 : 0)
+              << "\n";
+    print_gkh_profile_line(-1, 0, false, converged, profile);
+
+    return pass;
+}
+
+static bool run_gkh_special_check(const std::string &gkh_layout,
+                                  const std::string &gkh_accum,
+                                  int replay_threads,
+                                  int replay_tile_rows)
+{
+    bool all_pass = true;
+
+    Matrix zero_chase(4, 4, 0.0);
+    zero_chase.at(0, 0) = 0.0;
+    zero_chase.at(1, 1) = 3.0;
+    zero_chase.at(2, 2) = 2.0;
+    zero_chase.at(3, 3) = 1.0;
+    zero_chase.at(0, 1) = 1.10;
+    zero_chase.at(1, 2) = 0.35;
+    zero_chase.at(2, 3) = 0.20;
+    all_pass = run_one_gkh_special_case("zero_diagonal_chase", zero_chase,
+                                        gkh_layout, gkh_accum, replay_threads,
+                                        replay_tile_rows, true) &&
+               all_pass;
+
+    Matrix already_diag(5, 5, 0.0);
+    already_diag.at(0, 0) = 5.0;
+    already_diag.at(1, 1) = 4.0;
+    already_diag.at(2, 2) = 3.0;
+    already_diag.at(3, 3) = 2.0;
+    already_diag.at(4, 4) = 1.0;
+    all_pass = run_one_gkh_special_case("already_diagonal", already_diag,
+                                        gkh_layout, gkh_accum, replay_threads,
+                                        replay_tile_rows, false) &&
+               all_pass;
+
+    Matrix two_blocks(6, 6, 0.0);
+    two_blocks.at(0, 0) = 6.0;
+    two_blocks.at(1, 1) = 5.0;
+    two_blocks.at(2, 2) = 4.0;
+    two_blocks.at(3, 3) = 3.0;
+    two_blocks.at(4, 4) = 2.0;
+    two_blocks.at(5, 5) = 1.0;
+    two_blocks.at(0, 1) = 0.80;
+    two_blocks.at(1, 2) = 0.60;
+    two_blocks.at(2, 3) = 0.0;
+    two_blocks.at(3, 4) = 0.50;
+    two_blocks.at(4, 5) = 0.40;
+    all_pass = run_one_gkh_special_case("two_active_blocks", two_blocks,
+                                        gkh_layout, gkh_accum, replay_threads,
+                                        replay_tile_rows, false) &&
+               all_pass;
+
+    std::cout << "[gkh-special-summary] gkh_layout=" << gkh_layout
+              << " gkh_accum=" << gkh_accum
+              << " replay_threads=" << replay_threads
+              << " replay_tile_rows=" << replay_tile_rows
+              << " pass=" << (all_pass ? 1 : 0)
+              << "\n";
+    return all_pass;
+}
+
 int main(int argc, char **argv)
 {
 #ifdef _WIN32
@@ -554,6 +789,11 @@ int main(int argc, char **argv)
     std::string seed_policy = "sequence";
     bool gpu_profile = true;
     int gkh_profile = 0;
+    std::string gkh_layout = "normal";
+    bool gkh_uv_update = true;
+    std::string gkh_accum = "immediate";
+    int replay_threads = 1;
+    int replay_tile_rows = 1;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -608,6 +848,33 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
+        else if (arg == "--gkh-layout" && i + 1 < argc)
+        {
+            gkh_layout = argv[++i];
+        }
+        else if (arg == "--gkh-uv-update" && i + 1 < argc)
+        {
+            const int value = std::stoi(argv[++i]);
+            if (value != 0 && value != 1)
+            {
+                std::cerr << "Invalid --gkh-uv-update value: " << value << "\n";
+                std::cerr << "Available values: 0, 1\n";
+                return 1;
+            }
+            gkh_uv_update = (value != 0);
+        }
+        else if (arg == "--gkh-accum" && i + 1 < argc)
+        {
+            gkh_accum = argv[++i];
+        }
+        else if (arg == "--replay-threads" && i + 1 < argc)
+        {
+            replay_threads = std::stoi(argv[++i]);
+        }
+        else if (arg == "--replay-tile-rows" && i + 1 < argc)
+        {
+            replay_tile_rows = std::stoi(argv[++i]);
+        }
         else if (arg.rfind("--", 0) == 0)
         {
             std::cerr << "Unknown or incomplete option: " << arg << "\n";
@@ -625,6 +892,38 @@ int main(int argc, char **argv)
         std::cerr << "Available values: fixed, sequence\n";
         return 1;
     }
+    if (!valid_gkh_layout(gkh_layout))
+    {
+        std::cerr << "Invalid --gkh-layout value: " << gkh_layout << "\n";
+        std::cerr << "Available values: normal, tuv\n";
+        return 1;
+    }
+    if (!valid_gkh_accum(gkh_accum))
+    {
+        std::cerr << "Invalid --gkh-accum value: " << gkh_accum << "\n";
+        std::cerr << "Available values: immediate, deferred\n";
+        return 1;
+    }
+    if (replay_threads != 1 && replay_threads != 2 &&
+        replay_threads != 4 && replay_threads != 8)
+    {
+        std::cerr << "Invalid --replay-threads value: " << replay_threads << "\n";
+        std::cerr << "Available values: 1, 2, 4, 8\n";
+        return 1;
+    }
+    if (replay_tile_rows <= 0)
+    {
+        std::cerr << "Invalid --replay-tile-rows value: " << replay_tile_rows << "\n";
+        std::cerr << "Value must be positive.\n";
+        return 1;
+    }
+#ifndef _OPENMP
+    if (gkh_accum == "deferred" && replay_threads > 1)
+    {
+        std::cerr << "--replay-threads > 1 requires an OpenMP-enabled build.\n";
+        return 1;
+    }
+#endif
 
 #ifdef USE_CUDA_BIDIAG
     if (impl != "cpu" && impl != "gpu_kernel" && impl != "gpu_cublas")
@@ -641,17 +940,64 @@ int main(int argc, char **argv)
     }
 #endif
 
-    if (mode != "check" && mode != "bench")
+    if (mode != "check" && mode != "bench" && mode != "gkh-special-check")
     {
         std::cerr << "Unknown mode: " << mode << "\n";
-        std::cerr << "Available mode: check, bench\n";
+        std::cerr << "Available mode: check, bench, gkh-special-check\n";
         return 1;
+    }
+    if (!gkh_uv_update)
+    {
+        if (mode != "bench" || !full_svd || verify)
+        {
+            std::cerr << "--gkh-uv-update 0 is a diagnostic B-only mode and requires "
+                      << "--mode bench --full-svd 1 --verify 0\n";
+            return 1;
+        }
+        if (gkh_layout == "tuv")
+        {
+            std::cerr << "--gkh-layout tuv with --gkh-uv-update 0 is not supported.\n";
+            return 1;
+        }
+    }
+    if (gkh_accum == "deferred")
+    {
+        if (gkh_layout != "normal")
+        {
+            std::cerr << "--gkh-accum deferred currently supports only --gkh-layout normal.\n";
+            return 1;
+        }
+        if (!gkh_uv_update)
+        {
+            std::cerr << "--gkh-accum deferred requires --gkh-uv-update 1.\n";
+            return 1;
+        }
     }
 
     if (bench_n <= 0 || repeat <= 0)
     {
         std::cerr << "Invalid bench parameters: n and repeat must be positive.\n";
         return 1;
+    }
+
+    std::cout << "GKH layout: " << gkh_layout << "\n";
+    std::cout << "GKH U/V update: " << (gkh_uv_update ? 1 : 0) << "\n";
+    std::cout << "GKH accumulation: " << gkh_accum << "\n";
+    std::cout << "Replay threads: " << replay_threads << "\n";
+    std::cout << "Replay tile rows: " << replay_tile_rows << "\n";
+#ifdef _OPENMP
+    std::cout << "[OpenMP] enabled=1\n";
+    std::cout << "[OpenMP] max_threads=" << omp_get_max_threads() << "\n";
+#else
+    std::cout << "[OpenMP] enabled=0\n";
+    std::cout << "[OpenMP] max_threads=1\n";
+#endif
+
+    if (mode == "gkh-special-check")
+    {
+        const bool ok = run_gkh_special_check(gkh_layout, gkh_accum,
+                                              replay_threads, replay_tile_rows);
+        return ok ? 0 : 1;
     }
 
     std::cout << "实现版本: " << impl << "\n";
@@ -671,7 +1017,9 @@ int main(int argc, char **argv)
     if (mode == "bench")
     {
         const bool ok = run_bench_case(bench_n, base_seed, repeat, full_svd, verify,
-                                       impl, seed_policy, gpu_profile, gkh_profile);
+                                       impl, seed_policy, gpu_profile, gkh_profile,
+                                       gkh_layout, gkh_uv_update, gkh_accum,
+                                       replay_threads, replay_tile_rows);
         return ok ? 0 : 1;
     }
 
@@ -709,7 +1057,9 @@ int main(int argc, char **argv)
         A.at(4, 3) = 2.0;
         A.at(4, 4) = 4.0;
         ++total;
-        if (run_case("固定值 5x5", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
+        if (run_case("固定值 5x5", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile,
+                     gkh_profile, gkh_layout, gkh_uv_update, gkh_accum,
+                     replay_threads, replay_tile_rows))
         {
             ++passed;
         }
@@ -719,7 +1069,9 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(8, 8, -3.0, 3.0, base_seed + 1);
         ++total;
-        if (run_case("随机 8x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
+        if (run_case("随机 8x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile,
+                     gkh_profile, gkh_layout, gkh_uv_update, gkh_accum,
+                     replay_threads, replay_tile_rows))
         {
             ++passed;
         }
@@ -734,7 +1086,9 @@ int main(int argc, char **argv)
             A.at(i, 2) = A.at(i, 0) + 1e-8 * (i + 1);
         }
         ++total;
-        if (run_case("近秩亏损 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
+        if (run_case("近秩亏损 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile,
+                     gkh_profile, gkh_layout, gkh_uv_update, gkh_accum,
+                     replay_threads, replay_tile_rows))
         {
             ++passed;
         }
@@ -744,7 +1098,9 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(10, 8, -4.0, 4.0, base_seed + 3);
         ++total;
-        if (run_case("随机 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
+        if (run_case("随机 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile,
+                     gkh_profile, gkh_layout, gkh_uv_update, gkh_accum,
+                     replay_threads, replay_tile_rows))
         {
             ++passed;
         }
@@ -754,7 +1110,9 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(1000, 1000, -1.0, 1.0, base_seed + 4);
         ++total;
-        if (run_case("随机 1000x1000", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
+        if (run_case("随机 1000x1000", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile,
+                     gkh_profile, gkh_layout, gkh_uv_update, gkh_accum,
+                     replay_threads, replay_tile_rows))
         {
             ++passed;
         }

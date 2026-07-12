@@ -7,6 +7,9 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace
 {
@@ -19,10 +22,31 @@ namespace
         int r;
     };
 
+    struct RotationLog
+    {
+        int i0;
+        int i1;
+        double c;
+        double s;
+    };
+
     static double elapsed_ms(std::chrono::steady_clock::time_point beg,
                              std::chrono::steady_clock::time_point end)
     {
         return std::chrono::duration<double, std::milli>(end - beg).count();
+    }
+
+    static Matrix transpose_matrix(const Matrix &A)
+    {
+        Matrix T(A.cols(), A.rows());
+        for (int i = 0; i < A.rows(); ++i)
+        {
+            for (int j = 0; j < A.cols(); ++j)
+            {
+                T.at(j, i) = A.at(i, j);
+            }
+        }
+        return T;
     }
 
     // 对矩阵 M 的两行 r0, r1 左乘 Givens 旋转 [c s; -s c]。
@@ -84,6 +108,110 @@ namespace
         apply_right_cols(U, r0, r1, c, -s);
     }
 
+    static void accumulate_left_rotation(Matrix &U, Matrix *UT,
+                                         std::vector<RotationLog> *u_logs,
+                                         int r0, int r1,
+                                         double c, double s, const GKHOptions &options)
+    {
+        if (!options.update_uv)
+        {
+            return;
+        }
+        if (options.accumulation == GKHAccumulation::Deferred)
+        {
+            u_logs->push_back({r0, r1, c, s});
+            return;
+        }
+        if (options.layout == GKHLayout::TUV)
+        {
+            apply_left_rows(*UT, r0, r1, c, s);
+        }
+        else
+        {
+            accumulate_left_into_U(U, r0, r1, c, s);
+        }
+    }
+
+    static void accumulate_right_rotation(Matrix &V, Matrix *VT,
+                                          std::vector<RotationLog> *v_logs,
+                                          int c0, int c1,
+                                          double c, double s, const GKHOptions &options)
+    {
+        if (!options.update_uv)
+        {
+            return;
+        }
+        if (options.accumulation == GKHAccumulation::Deferred)
+        {
+            v_logs->push_back({c0, c1, c, s});
+            return;
+        }
+        if (options.layout == GKHLayout::TUV)
+        {
+            apply_left_rows(*VT, c0, c1, c, -s);
+        }
+        else
+        {
+            apply_right_cols(V, c0, c1, c, s);
+        }
+    }
+
+    static void replay_u_logs(Matrix &U, const std::vector<RotationLog> &logs,
+                              int replay_threads, int tile_rows)
+    {
+        const int rows = U.rows();
+        const int ld = U.leading_dim();
+        const int num_tiles = (rows + tile_rows - 1) / tile_rows;
+        double *data = U.data();
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(replay_threads)
+#endif
+        for (int tile = 0; tile < num_tiles; ++tile)
+        {
+            const int row_begin = tile * tile_rows;
+            const int row_end = std::min(rows, row_begin + tile_rows);
+            for (const RotationLog &log : logs)
+            {
+                for (int row = row_begin; row < row_end; ++row)
+                {
+                    double *base = data + row * ld;
+                    const double a = base[log.i0];
+                    const double b = base[log.i1];
+                    base[log.i0] = log.c * a + log.s * b;
+                    base[log.i1] = -log.s * a + log.c * b;
+                }
+            }
+        }
+    }
+
+    static void replay_v_logs(Matrix &V, const std::vector<RotationLog> &logs,
+                              int replay_threads, int tile_rows)
+    {
+        const int rows = V.rows();
+        const int ld = V.leading_dim();
+        const int num_tiles = (rows + tile_rows - 1) / tile_rows;
+        double *data = V.data();
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(replay_threads)
+#endif
+        for (int tile = 0; tile < num_tiles; ++tile)
+        {
+            const int row_begin = tile * tile_rows;
+            const int row_end = std::min(rows, row_begin + tile_rows);
+            for (const RotationLog &log : logs)
+            {
+                for (int row = row_begin; row < row_end; ++row)
+                {
+                    double *base = data + row * ld;
+                    const double a = base[log.i0];
+                    const double b = base[log.i1];
+                    base[log.i0] = log.c * a - log.s * b;
+                    base[log.i1] = log.s * a + log.c * b;
+                }
+            }
+        }
+    }
+
     // 计算活动块 [l, r] 对应 B^T B 右下 2x2 主子块的 Wilkinson 偏移。
     // 偏移用于加速 QR 迭代收敛，并让 bulge chasing 过程更稳定。
     static double block_wilkinson_shift(const Matrix &B, int l, int r)
@@ -133,8 +261,13 @@ namespace
 
     // 对活动块 [l, r] 执行一次“单块 GKH bulge chasing”迭代。
     // 流程：首次右乘引入 bulge -> 首次左乘消 bulge -> 交替右乘/左乘将 bulge 追赶到块末端。
-    static void one_block_step(Matrix &U, Matrix &B, Matrix &V, int l, int r,
-                               GKHProfile *profile)
+    static void one_block_step(Matrix &U, Matrix &B, Matrix &V,
+                               Matrix *UT, Matrix *VT,
+                               std::vector<RotationLog> *u_logs,
+                               std::vector<RotationLog> *v_logs,
+                               int l, int r,
+                               GKHProfile *profile,
+                               const GKHOptions &options)
     {
         if (r <= l)
         {
@@ -152,7 +285,7 @@ namespace
         const double z = B.at(l, l) * B.at(l, l + 1);
         givens_rotation(x, z, c, s, rr, false);
         apply_right_cols(B, l, l + 1, c, s);
-        apply_right_cols(V, l, l + 1, c, s);
+        accumulate_right_rotation(V, VT, v_logs, l, l + 1, c, s, options);
         if (profile)
         {
             ++profile->right_rotations;
@@ -161,7 +294,7 @@ namespace
         // 首次左乘：消去 (l+1, l)。
         givens_rotation(B.at(l, l), B.at(l + 1, l), c, s, rr, true);
         apply_left_rows(B, l, l + 1, c, s);
-        accumulate_left_into_U(U, l, l + 1, c, s);
+        accumulate_left_rotation(U, UT, u_logs, l, l + 1, c, s, options);
         if (profile)
         {
             ++profile->left_rotations;
@@ -172,7 +305,7 @@ namespace
             // 右乘：消去 (k-1, k+1)
             givens_rotation(B.at(k - 1, k), B.at(k - 1, k + 1), c, s, rr, false);
             apply_right_cols(B, k, k + 1, c, s);
-            apply_right_cols(V, k, k + 1, c, s);
+            accumulate_right_rotation(V, VT, v_logs, k, k + 1, c, s, options);
             if (profile)
             {
                 ++profile->right_rotations;
@@ -181,7 +314,7 @@ namespace
             // 左乘：消去 (k+1, k)
             givens_rotation(B.at(k, k), B.at(k + 1, k), c, s, rr, true);
             apply_left_rows(B, k, k + 1, c, s);
-            accumulate_left_into_U(U, k, k + 1, c, s);
+            accumulate_left_rotation(U, UT, u_logs, k, k + 1, c, s, options);
             if (profile)
             {
                 ++profile->left_rotations;
@@ -192,8 +325,13 @@ namespace
     // 处理“对角元 d_k 近零但超对角 e_k 未近零”的情况。
     // 思路与单块追赶类似：先右乘把 e_i 消掉，再左乘清理新引入的次对角 bulge，
     // 把这个问题逐步向右传递，直到块末端。
-    static bool chase_zero_diagonal(Matrix &U, Matrix &B, Matrix &V, int k, double tol,
-                                    GKHProfile *profile)
+    static bool chase_zero_diagonal(Matrix &U, Matrix &B, Matrix &V,
+                                    Matrix *UT, Matrix *VT,
+                                    std::vector<RotationLog> *u_logs,
+                                    std::vector<RotationLog> *v_logs,
+                                    int k, double tol,
+                                    GKHProfile *profile,
+                                    const GKHOptions &options)
     {
         const int m = B.rows();
         const int n = B.cols();
@@ -224,7 +362,7 @@ namespace
             // 右乘：使第 i 行满足 [d_i, e_i] * G = [r, 0]。
             givens_rotation(B.at(i, i), B.at(i, i + 1), c, s, rr, false);
             apply_right_cols(B, i, i + 1, c, s);
-            apply_right_cols(V, i, i + 1, c, s);
+            accumulate_right_rotation(V, VT, v_logs, i, i + 1, c, s, options);
             if (profile)
             {
                 ++profile->right_rotations;
@@ -235,7 +373,7 @@ namespace
             {
                 givens_rotation(B.at(i, i), B.at(i + 1, i), c, s, rr, true);
                 apply_left_rows(B, i, i + 1, c, s);
-                accumulate_left_into_U(U, i, i + 1, c, s);
+                accumulate_left_rotation(U, UT, u_logs, i, i + 1, c, s, options);
                 if (profile)
                 {
                     ++profile->left_rotations;
@@ -251,8 +389,13 @@ namespace
 
     // 扫描所有 d_k≈0 的位置：若对应 e_k 仍显著非零，则调用追赶过程压缩该异常结构。
     // 返回值表示本轮是否对 B/U/V 做了实际更新。
-    static bool handle_diagonal_zeros(Matrix &U, Matrix &B, Matrix &V, double tol,
-                                      GKHProfile *profile)
+    static bool handle_diagonal_zeros(Matrix &U, Matrix &B, Matrix &V,
+                                      Matrix *UT, Matrix *VT,
+                                      std::vector<RotationLog> *u_logs,
+                                      std::vector<RotationLog> *v_logs,
+                                      double tol,
+                                      GKHProfile *profile,
+                                      const GKHOptions &options)
     {
         const int n = B.cols();
         bool changed = false;
@@ -265,7 +408,8 @@ namespace
         {
             if (std::fabs(B.at(k, k)) <= diag_tol && std::fabs(B.at(k, k + 1)) > super_tol)
             {
-                if (chase_zero_diagonal(U, B, V, k, tol, profile))
+                if (chase_zero_diagonal(U, B, V, UT, VT, u_logs, v_logs,
+                                        k, tol, profile, options))
                 {
                     changed = true;
                 }
@@ -373,7 +517,7 @@ namespace
 // - 迭代中自动分块、处理对角近零、并在每个活动块上做 bulge chasing；
 // - 成功收敛后，B 被整理为非负且降序的对角矩阵（其对角元即奇异值）。
 bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, double tol,
-                             GKHProfile *profile)
+                             GKHProfile *profile, const GKHOptions &options)
 {
     const int m = B.rows();
     const int n = B.cols();
@@ -390,6 +534,31 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
     {
         throw std::invalid_argument("gkh_svd_from_bidiagonal_v2: V must be n x n");
     }
+    if (options.layout == GKHLayout::TUV && !options.update_uv)
+    {
+        throw std::invalid_argument("gkh_svd_from_bidiagonal_v2: TUV layout requires U/V updates");
+    }
+    if (options.accumulation == GKHAccumulation::Deferred)
+    {
+        if (options.layout != GKHLayout::Normal)
+        {
+            throw std::invalid_argument("gkh_svd_from_bidiagonal_v2: deferred accumulation requires normal layout");
+        }
+        if (!options.update_uv)
+        {
+            throw std::invalid_argument("gkh_svd_from_bidiagonal_v2: deferred accumulation requires U/V updates");
+        }
+        if (options.replay_threads < 1 || options.replay_tile_rows < 1)
+        {
+            throw std::invalid_argument("gkh_svd_from_bidiagonal_v2: replay threads and tile rows must be positive");
+        }
+#ifndef _OPENMP
+        if (options.replay_threads > 1)
+        {
+            throw std::invalid_argument("gkh_svd_from_bidiagonal_v2: replay_threads > 1 requires OpenMP build");
+        }
+#endif
+    }
 
     const int profile_mode = profile ? profile->mode : 0;
     if (profile)
@@ -399,8 +568,41 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
     }
     GKHProfile *active_profile = (profile && profile_mode > 0) ? profile : nullptr;
     const bool profile_timing = active_profile && profile_mode == 2;
+    const bool use_tuv = options.layout == GKHLayout::TUV && options.update_uv;
+    const bool use_deferred = options.accumulation == GKHAccumulation::Deferred;
+
+    std::vector<RotationLog> u_logs;
+    std::vector<RotationLog> v_logs;
+    std::vector<RotationLog> *u_logs_ptr = use_deferred ? &u_logs : nullptr;
+    std::vector<RotationLog> *v_logs_ptr = use_deferred ? &v_logs : nullptr;
+
+    Matrix UT;
+    Matrix VT;
+    Matrix *UT_ptr = nullptr;
+    Matrix *VT_ptr = nullptr;
+    if (use_tuv)
+    {
+        if (profile_timing)
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            UT = transpose_matrix(U);
+            VT = transpose_matrix(V);
+            const auto t1 = std::chrono::steady_clock::now();
+            active_profile->transpose_in_ms += elapsed_ms(t0, t1);
+        }
+        else
+        {
+            UT = transpose_matrix(U);
+            VT = transpose_matrix(V);
+        }
+        UT_ptr = &UT;
+        VT_ptr = &VT;
+    }
 
     bool converged = false;
+    const auto generation_t0 = (profile_timing && use_deferred)
+                                   ? std::chrono::steady_clock::now()
+                                   : std::chrono::steady_clock::time_point{};
 
     for (int iter = 0; iter < max_iter; ++iter)
     {
@@ -424,13 +626,15 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         if (profile_timing)
         {
             const auto t0 = std::chrono::steady_clock::now();
-            handle_diagonal_zeros(U, B, V, tol, active_profile);
+            handle_diagonal_zeros(U, B, V, UT_ptr, VT_ptr, u_logs_ptr, v_logs_ptr,
+                                  tol, active_profile, options);
             const auto t1 = std::chrono::steady_clock::now();
             active_profile->zero_handle_ms += elapsed_ms(t0, t1);
         }
         else
         {
-            handle_diagonal_zeros(U, B, V, tol, active_profile);
+            handle_diagonal_zeros(U, B, V, UT_ptr, VT_ptr, u_logs_ptr, v_logs_ptr,
+                                  tol, active_profile, options);
         }
 
         // 根据超对角线断点拆分活动块
@@ -501,7 +705,8 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
                 {
                     ++active_profile->block_steps;
                 }
-                one_block_step(U, B, V, blocks[i].l, blocks[i].r, active_profile);
+                one_block_step(U, B, V, UT_ptr, VT_ptr, u_logs_ptr, v_logs_ptr,
+                               blocks[i].l, blocks[i].r, active_profile, options);
             }
         }
         if (profile_timing)
@@ -510,20 +715,88 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
             active_profile->block_step_ms += elapsed_ms(block_step_t0, block_step_t1);
         }
     }
+    if (profile_timing && use_deferred)
+    {
+        const auto generation_t1 = std::chrono::steady_clock::now();
+        active_profile->log_generation_ms += elapsed_ms(generation_t0, generation_t1);
+    }
+
+    if (active_profile && use_deferred)
+    {
+        active_profile->u_log_count = static_cast<long long>(u_logs.size());
+        active_profile->v_log_count = static_cast<long long>(v_logs.size());
+        active_profile->logical_log_bytes =
+            static_cast<long long>((u_logs.size() + v_logs.size()) * sizeof(RotationLog));
+        active_profile->allocated_log_bytes =
+            static_cast<long long>((u_logs.capacity() + v_logs.capacity()) * sizeof(RotationLog));
+        active_profile->log_bytes = active_profile->allocated_log_bytes;
+    }
 
     // 迭代结束后统一结构清理与标准化输出。
-    const auto finalize_t0 = profile_timing ? std::chrono::steady_clock::now()
-                                            : std::chrono::steady_clock::time_point{};
-    cleanup_bidiagonal(B, tol);
-    for (int i = 0; i < n - 1; ++i)
-    {
-        B.at(i, i + 1) = 0.0;
-    }
-    make_nonnegative_and_sort(U, B, V);
     if (profile_timing)
     {
-        const auto finalize_t1 = std::chrono::steady_clock::now();
-        active_profile->finalize_ms += elapsed_ms(finalize_t0, finalize_t1);
+        const auto t0 = std::chrono::steady_clock::now();
+        cleanup_bidiagonal(B, tol);
+        for (int i = 0; i < n - 1; ++i)
+        {
+            B.at(i, i + 1) = 0.0;
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        active_profile->finalize_ms += elapsed_ms(t0, t1);
+    }
+    else
+    {
+        cleanup_bidiagonal(B, tol);
+        for (int i = 0; i < n - 1; ++i)
+        {
+            B.at(i, i + 1) = 0.0;
+        }
+    }
+    if (use_tuv)
+    {
+        if (profile_timing)
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            U = transpose_matrix(UT);
+            V = transpose_matrix(VT);
+            const auto t1 = std::chrono::steady_clock::now();
+            active_profile->transpose_out_ms += elapsed_ms(t0, t1);
+        }
+        else
+        {
+            U = transpose_matrix(UT);
+            V = transpose_matrix(VT);
+        }
+    }
+    if (use_deferred)
+    {
+        if (profile_timing)
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            replay_u_logs(U, u_logs, options.replay_threads, options.replay_tile_rows);
+            const auto t1 = std::chrono::steady_clock::now();
+            replay_v_logs(V, v_logs, options.replay_threads, options.replay_tile_rows);
+            const auto t2 = std::chrono::steady_clock::now();
+            active_profile->replay_u_ms += elapsed_ms(t0, t1);
+            active_profile->replay_v_ms += elapsed_ms(t1, t2);
+            active_profile->replay_total_ms += elapsed_ms(t0, t2);
+        }
+        else
+        {
+            replay_u_logs(U, u_logs, options.replay_threads, options.replay_tile_rows);
+            replay_v_logs(V, v_logs, options.replay_threads, options.replay_tile_rows);
+        }
+    }
+    if (profile_timing)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        make_nonnegative_and_sort(U, B, V);
+        const auto t1 = std::chrono::steady_clock::now();
+        active_profile->finalize_ms += elapsed_ms(t0, t1);
+    }
+    else
+    {
+        make_nonnegative_and_sort(U, B, V);
     }
 
     return converged;
