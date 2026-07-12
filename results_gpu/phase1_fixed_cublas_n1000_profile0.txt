@@ -1,0 +1,11 @@
+实现版本: gpu_cublas
+GPU profiling: 0
+CUDA warmup/context init(ms): 232.391
+[bench] impl=gpu_cublas n=1000 repeat=5 seed_policy=fixed gpu_profile=0 full_svd=0 verify=1
+[bench-verify] rep=0 rel_recon=4.7447e-15 orth_u=1.20727e-13 orth_v=1.14587e-13 bidiag_structure_err=0 pass=1
+[bench-run] rep=0 seed=20261408 gpu_profile=0 bidiag_ms=1543 gkh_ms=0 total_ms=1543 gpu_total_ms=1542.98 profile_breakdown=disabled
+[bench-run] rep=1 seed=20261408 gpu_profile=0 bidiag_ms=2083.41 gkh_ms=0 total_ms=2083.41 gpu_total_ms=2083.4 profile_breakdown=disabled
+[bench-run] rep=2 seed=20261408 gpu_profile=0 bidiag_ms=1958.81 gkh_ms=0 total_ms=1958.81 gpu_total_ms=1958.8 profile_breakdown=disabled
+[bench-run] rep=3 seed=20261408 gpu_profile=0 bidiag_ms=1554.59 gkh_ms=0 total_ms=1554.59 gpu_total_ms=1554.58 profile_breakdown=disabled
+[bench-run] rep=4 seed=20261408 gpu_profile=0 bidiag_ms=1484.36 gkh_ms=0 total_ms=1484.36 gpu_total_ms=1484.36 profile_breakdown=disabled
+[bench-summary] impl=gpu_cublas n=1000 repeat=5 seed_policy=fixed gpu_profile=0 avg_bidiag_ms=1724.83 avg_gkh_ms=0 avg_total_ms=1724.83 avg_gpu_total_ms=1724.83 profile_breakdown=disabled pass=1

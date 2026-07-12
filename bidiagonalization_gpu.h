@@ -14,7 +14,9 @@ struct GpuBidiagStats
 void cuda_bidiag_warmup();
 
 Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
-                                GpuBidiagStats *stats = nullptr);
+                                GpuBidiagStats *stats = nullptr,
+                                bool enable_profile = true);
 
 Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
-                                GpuBidiagStats *stats = nullptr);
+                                GpuBidiagStats *stats = nullptr,
+                                bool enable_profile = true);

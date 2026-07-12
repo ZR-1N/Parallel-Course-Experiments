@@ -1,0 +1,25 @@
+On branch svd-lab5-gpu
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	results_gpu/final_check_cpu.txt
+	results_gpu/final_check_gpu_cublas.txt
+	results_gpu/final_check_gpu_kernel.txt
+	results_gpu/final_env_commit.txt
+	results_gpu/final_env_git_status.txt
+	results_gpu/final_env_nvidia_smi.txt
+	results_gpu/final_full_cpu_n1000.txt
+	results_gpu/final_full_cpu_n128.txt
+	results_gpu/final_full_cpu_n256.txt
+	results_gpu/final_full_cpu_n512.txt
+	results_gpu/final_full_cublas_n1000.txt
+	results_gpu/final_full_cublas_n128.txt
+	results_gpu/final_full_cublas_n256.txt
+	results_gpu/final_full_cublas_n512.txt
+	results_gpu/final_full_kernel_n1000.txt
+	results_gpu/final_full_kernel_n128.txt
+	results_gpu/final_full_kernel_n256.txt
+	results_gpu/final_full_kernel_n512.txt
+	results_gpu/final_full_summary.txt
+	results_gpu/final_full_summary_ps.txt
+
+nothing added to commit but untracked files present (use "git add" to track)

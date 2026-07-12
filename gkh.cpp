@@ -2,6 +2,7 @@
 
 #include "givens.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -17,6 +18,12 @@ namespace
         int l;
         int r;
     };
+
+    static double elapsed_ms(std::chrono::steady_clock::time_point beg,
+                             std::chrono::steady_clock::time_point end)
+    {
+        return std::chrono::duration<double, std::milli>(end - beg).count();
+    }
 
     // 对矩阵 M 的两行 r0, r1 左乘 Givens 旋转 [c s; -s c]。
     // 即 M <- L * M，其中 L 只作用在第 r0/r1 两行上。
@@ -126,7 +133,8 @@ namespace
 
     // 对活动块 [l, r] 执行一次“单块 GKH bulge chasing”迭代。
     // 流程：首次右乘引入 bulge -> 首次左乘消 bulge -> 交替右乘/左乘将 bulge 追赶到块末端。
-    static void one_block_step(Matrix &U, Matrix &B, Matrix &V, int l, int r)
+    static void one_block_step(Matrix &U, Matrix &B, Matrix &V, int l, int r,
+                               GKHProfile *profile)
     {
         if (r <= l)
         {
@@ -145,11 +153,19 @@ namespace
         givens_rotation(x, z, c, s, rr, false);
         apply_right_cols(B, l, l + 1, c, s);
         apply_right_cols(V, l, l + 1, c, s);
+        if (profile)
+        {
+            ++profile->right_rotations;
+        }
 
         // 首次左乘：消去 (l+1, l)。
         givens_rotation(B.at(l, l), B.at(l + 1, l), c, s, rr, true);
         apply_left_rows(B, l, l + 1, c, s);
         accumulate_left_into_U(U, l, l + 1, c, s);
+        if (profile)
+        {
+            ++profile->left_rotations;
+        }
 
         for (int k = l + 1; k <= r - 1; ++k)
         {
@@ -157,18 +173,27 @@ namespace
             givens_rotation(B.at(k - 1, k), B.at(k - 1, k + 1), c, s, rr, false);
             apply_right_cols(B, k, k + 1, c, s);
             apply_right_cols(V, k, k + 1, c, s);
+            if (profile)
+            {
+                ++profile->right_rotations;
+            }
 
             // 左乘：消去 (k+1, k)
             givens_rotation(B.at(k, k), B.at(k + 1, k), c, s, rr, true);
             apply_left_rows(B, k, k + 1, c, s);
             accumulate_left_into_U(U, k, k + 1, c, s);
+            if (profile)
+            {
+                ++profile->left_rotations;
+            }
         }
     }
 
     // 处理“对角元 d_k 近零但超对角 e_k 未近零”的情况。
     // 思路与单块追赶类似：先右乘把 e_i 消掉，再左乘清理新引入的次对角 bulge，
     // 把这个问题逐步向右传递，直到块末端。
-    static bool chase_zero_diagonal(Matrix &U, Matrix &B, Matrix &V, int k, double tol)
+    static bool chase_zero_diagonal(Matrix &U, Matrix &B, Matrix &V, int k, double tol,
+                                    GKHProfile *profile)
     {
         const int m = B.rows();
         const int n = B.cols();
@@ -186,6 +211,10 @@ namespace
         }
 
         bool changed = false;
+        if (profile)
+        {
+            ++profile->zero_chase_calls;
+        }
         for (int i = k; i <= n - 2; ++i)
         {
             double c = 1.0;
@@ -196,6 +225,10 @@ namespace
             givens_rotation(B.at(i, i), B.at(i, i + 1), c, s, rr, false);
             apply_right_cols(B, i, i + 1, c, s);
             apply_right_cols(V, i, i + 1, c, s);
+            if (profile)
+            {
+                ++profile->right_rotations;
+            }
 
             // 左乘：消去 (i+1, i) 处由右乘引入的 bulge。
             if (i + 1 < m)
@@ -203,6 +236,10 @@ namespace
                 givens_rotation(B.at(i, i), B.at(i + 1, i), c, s, rr, true);
                 apply_left_rows(B, i, i + 1, c, s);
                 accumulate_left_into_U(U, i, i + 1, c, s);
+                if (profile)
+                {
+                    ++profile->left_rotations;
+                }
             }
 
             changed = true;
@@ -214,7 +251,8 @@ namespace
 
     // 扫描所有 d_k≈0 的位置：若对应 e_k 仍显著非零，则调用追赶过程压缩该异常结构。
     // 返回值表示本轮是否对 B/U/V 做了实际更新。
-    static bool handle_diagonal_zeros(Matrix &U, Matrix &B, Matrix &V, double tol)
+    static bool handle_diagonal_zeros(Matrix &U, Matrix &B, Matrix &V, double tol,
+                                      GKHProfile *profile)
     {
         const int n = B.cols();
         bool changed = false;
@@ -227,7 +265,7 @@ namespace
         {
             if (std::fabs(B.at(k, k)) <= diag_tol && std::fabs(B.at(k, k + 1)) > super_tol)
             {
-                if (chase_zero_diagonal(U, B, V, k, tol))
+                if (chase_zero_diagonal(U, B, V, k, tol, profile))
                 {
                     changed = true;
                 }
@@ -240,15 +278,21 @@ namespace
     // 根据超对角线是否“足够小”对问题进行分块。
     // 若 |e_k| <= tol*(|d_k|+|d_{k+1}|+1)，认为该位置可解耦并直接置零。
     // 最终会得到一系列小矩阵。
-    static std::vector<Block> split_active_blocks(Matrix &B, int n, double tol)
+    static std::vector<Block> split_active_blocks(Matrix &B, int n, double tol,
+                                                  GKHProfile *profile)
     {
         for (int k = 0; k < n - 1; ++k)
         {
             const double a = std::fabs(B.at(k, k));
             const double d = std::fabs(B.at(k + 1, k + 1));
             const double crit = tol * (a + d + 1.0);
-            if (std::fabs(B.at(k, k + 1)) <= crit)
+            const double e = B.at(k, k + 1);
+            if (std::fabs(e) <= crit)
             {
+                if (profile && std::fabs(e) > 0.0)
+                {
+                    ++profile->deflations;
+                }
                 B.at(k, k + 1) = 0.0;
             }
         }
@@ -328,7 +372,8 @@ namespace
 // - 输入输出满足 A = U * B * V^T 不变；
 // - 迭代中自动分块、处理对角近零、并在每个活动块上做 bulge chasing；
 // - 成功收敛后，B 被整理为非负且降序的对角矩阵（其对角元即奇异值）。
-bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, double tol)
+bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, double tol,
+                             GKHProfile *profile)
 {
     const int m = B.rows();
     const int n = B.cols();
@@ -346,18 +391,87 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         throw std::invalid_argument("gkh_svd_from_bidiagonal_v2: V must be n x n");
     }
 
+    const int profile_mode = profile ? profile->mode : 0;
+    if (profile)
+    {
+        *profile = GKHProfile{};
+        profile->mode = profile_mode;
+    }
+    GKHProfile *active_profile = (profile && profile_mode > 0) ? profile : nullptr;
+    const bool profile_timing = active_profile && profile_mode == 2;
+
     bool converged = false;
 
     for (int iter = 0; iter < max_iter; ++iter)
     {
+        if (active_profile)
+        {
+            ++active_profile->outer_iterations;
+        }
         // 清理数值噪声，并优先处理 d_k≈0 的特殊情形。
-        cleanup_bidiagonal(B, tol);
-        handle_diagonal_zeros(U, B, V, tol);
+        if (profile_timing)
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            cleanup_bidiagonal(B, tol);
+            const auto t1 = std::chrono::steady_clock::now();
+            active_profile->cleanup_ms += elapsed_ms(t0, t1);
+        }
+        else
+        {
+            cleanup_bidiagonal(B, tol);
+        }
+
+        if (profile_timing)
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            handle_diagonal_zeros(U, B, V, tol, active_profile);
+            const auto t1 = std::chrono::steady_clock::now();
+            active_profile->zero_handle_ms += elapsed_ms(t0, t1);
+        }
+        else
+        {
+            handle_diagonal_zeros(U, B, V, tol, active_profile);
+        }
 
         // 根据超对角线断点拆分活动块
         // 这里子矩阵间是相互独立的，所以此处具有很大的并行潜力：你可以尝试多线程/多进程进行处理
         // 但根据算法，收集 Givens 旋转并更新 U/V 需要在每个块内顺序执行，所以这可能给并行带来麻烦。
-        std::vector<Block> blocks = split_active_blocks(B, n, tol);
+        std::vector<Block> blocks;
+        if (profile_timing)
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            blocks = split_active_blocks(B, n, tol, active_profile);
+            const auto t1 = std::chrono::steady_clock::now();
+            active_profile->split_ms += elapsed_ms(t0, t1);
+        }
+        else
+        {
+            blocks = split_active_blocks(B, n, tol, active_profile);
+        }
+
+        if (active_profile)
+        {
+            int nontrivial_blocks = 0;
+            for (const auto &blk : blocks)
+            {
+                if (blk.r > blk.l)
+                {
+                    const int block_size = blk.r - blk.l + 1;
+                    ++nontrivial_blocks;
+                    active_profile->total_nontrivial_block_sizes += block_size;
+                    active_profile->max_block_size =
+                        std::max(active_profile->max_block_size, block_size);
+                }
+            }
+
+            active_profile->total_nontrivial_blocks += nontrivial_blocks;
+            if (nontrivial_blocks > 1)
+            {
+                ++active_profile->iterations_with_multiple_blocks;
+            }
+            active_profile->max_nontrivial_blocks =
+                std::max(active_profile->max_nontrivial_blocks, nontrivial_blocks);
+        }
 
         // 若全部是 1x1 块，说明所有超对角都已收敛为 0。
         bool all_singletons = true;
@@ -377,22 +491,40 @@ bool gkh_svd_from_bidiagonal(Matrix &U, Matrix &B, Matrix &V, int max_iter, doub
         }
 
         // 从右到左处理每个非平凡块，减少末端块对前面块的干扰。
+        const auto block_step_t0 = profile_timing ? std::chrono::steady_clock::now()
+                                                  : std::chrono::steady_clock::time_point{};
         for (int i = static_cast<int>(blocks.size()) - 1; i >= 0; --i)
         {
             if (blocks[i].r > blocks[i].l)
             {
-                one_block_step(U, B, V, blocks[i].l, blocks[i].r);
+                if (active_profile)
+                {
+                    ++active_profile->block_steps;
+                }
+                one_block_step(U, B, V, blocks[i].l, blocks[i].r, active_profile);
             }
+        }
+        if (profile_timing)
+        {
+            const auto block_step_t1 = std::chrono::steady_clock::now();
+            active_profile->block_step_ms += elapsed_ms(block_step_t0, block_step_t1);
         }
     }
 
     // 迭代结束后统一结构清理与标准化输出。
+    const auto finalize_t0 = profile_timing ? std::chrono::steady_clock::now()
+                                            : std::chrono::steady_clock::time_point{};
     cleanup_bidiagonal(B, tol);
     for (int i = 0; i < n - 1; ++i)
     {
         B.at(i, i + 1) = 0.0;
     }
     make_nonnegative_and_sort(U, B, V);
+    if (profile_timing)
+    {
+        const auto finalize_t1 = std::chrono::steady_clock::now();
+        active_profile->finalize_ms += elapsed_ms(finalize_t0, finalize_t1);
+    }
 
     return converged;
 }

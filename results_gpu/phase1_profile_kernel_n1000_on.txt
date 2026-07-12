@@ -1,0 +1,11 @@
+实现版本: gpu_kernel
+GPU profiling: 1
+CUDA warmup/context init(ms): 194.653
+[bench] impl=gpu_kernel n=1000 repeat=5 seed_policy=fixed gpu_profile=1 full_svd=0 verify=1
+[bench-verify] rep=0 rel_recon=4.93428e-15 orth_u=1.18451e-13 orth_v=1.24024e-13 bidiag_structure_err=0 pass=1
+[bench-run] rep=0 seed=20261408 gpu_profile=1 bidiag_ms=2551.62 gkh_ms=0 total_ms=2551.62 gpu_total_ms=2551.61 gpu_h2d_ms=26.8527 gpu_d2h_ms=72.2845 gpu_kernel_ms=488.786 gpu_other_ms=1963.69
+[bench-run] rep=1 seed=20261408 gpu_profile=1 bidiag_ms=3526.34 gkh_ms=0 total_ms=3526.34 gpu_total_ms=3526.34 gpu_h2d_ms=25.5393 gpu_d2h_ms=91.8839 gpu_kernel_ms=687.282 gpu_other_ms=2721.63
+[bench-run] rep=2 seed=20261408 gpu_profile=1 bidiag_ms=3810.14 gkh_ms=0 total_ms=3810.14 gpu_total_ms=3810.14 gpu_h2d_ms=25.4219 gpu_d2h_ms=95.2072 gpu_kernel_ms=731.9 gpu_other_ms=2957.61
+[bench-run] rep=3 seed=20261408 gpu_profile=1 bidiag_ms=3894.74 gkh_ms=0 total_ms=3894.74 gpu_total_ms=3894.73 gpu_h2d_ms=25.201 gpu_d2h_ms=98.6493 gpu_kernel_ms=817.625 gpu_other_ms=2953.26
+[bench-run] rep=4 seed=20261408 gpu_profile=1 bidiag_ms=3918.99 gkh_ms=0 total_ms=3918.99 gpu_total_ms=3918.99 gpu_h2d_ms=26.6337 gpu_d2h_ms=99.1598 gpu_kernel_ms=865.627 gpu_other_ms=2927.57
+[bench-summary] impl=gpu_kernel n=1000 repeat=5 seed_policy=fixed gpu_profile=1 avg_bidiag_ms=3540.37 avg_gkh_ms=0 avg_total_ms=3540.37 avg_gpu_total_ms=3540.36 avg_gpu_h2d_ms=25.9297 avg_gpu_d2h_ms=91.4369 avg_gpu_kernel_ms=718.244 avg_gpu_other_ms=2704.75 pass=1

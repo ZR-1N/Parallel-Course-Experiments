@@ -46,30 +46,46 @@ void cuda_bidiag_warmup()
     CUBLAS_CHECK(cublasDestroy(handle));
 }
 
-#define CUDA_LAUNCH_TIMED(kernel_ms_acc, ...)                                  \
+#define CUDA_LAUNCH_PROFILED(enable_profile, kernel_ms_acc, ...)               \
     do                                                                         \
     {                                                                          \
-        cudaEvent_t __start, __stop;                                            \
-        CUDA_CHECK(cudaEventCreate(&__start));                                 \
-        CUDA_CHECK(cudaEventCreate(&__stop));                                  \
-        CUDA_CHECK(cudaEventRecord(__start));                                  \
-        __VA_ARGS__;                                                           \
-        CUDA_CHECK(cudaGetLastError());                                        \
-        CUDA_CHECK(cudaEventRecord(__stop));                                   \
-        CUDA_CHECK(cudaEventSynchronize(__stop));                              \
-        float __ms = 0.0f;                                                     \
-        CUDA_CHECK(cudaEventElapsedTime(&__ms, __start, __stop));              \
-        kernel_ms_acc += static_cast<double>(__ms);                            \
-        CUDA_CHECK(cudaEventDestroy(__start));                                 \
-        CUDA_CHECK(cudaEventDestroy(__stop));                                  \
+        if (enable_profile)                                                    \
+        {                                                                      \
+            cudaEvent_t __start, __stop;                                        \
+            CUDA_CHECK(cudaEventCreate(&__start));                             \
+            CUDA_CHECK(cudaEventCreate(&__stop));                              \
+            CUDA_CHECK(cudaEventRecord(__start));                              \
+            __VA_ARGS__;                                                       \
+            CUDA_CHECK(cudaGetLastError());                                    \
+            CUDA_CHECK(cudaEventRecord(__stop));                               \
+            CUDA_CHECK(cudaEventSynchronize(__stop));                          \
+            float __ms = 0.0f;                                                 \
+            CUDA_CHECK(cudaEventElapsedTime(&__ms, __start, __stop));          \
+            kernel_ms_acc += static_cast<double>(__ms);                        \
+            CUDA_CHECK(cudaEventDestroy(__start));                             \
+            CUDA_CHECK(cudaEventDestroy(__stop));                              \
+        }                                                                      \
+        else                                                                   \
+        {                                                                      \
+            __VA_ARGS__;                                                       \
+            CUDA_CHECK(cudaGetLastError());                                    \
+        }                                                                      \
     } while (0)
 
-static double timed_cuda_memcpy(void *dst, const void *src, size_t bytes, cudaMemcpyKind kind)
+static double cuda_memcpy_profiled(bool enable_profile,
+                                   void *dst, const void *src,
+                                   size_t bytes, cudaMemcpyKind kind)
 {
-    auto t0 = std::chrono::high_resolution_clock::now();
+    if (enable_profile)
+    {
+        auto t0 = std::chrono::high_resolution_clock::now();
+        CUDA_CHECK(cudaMemcpy(dst, src, bytes, kind));
+        auto t1 = std::chrono::high_resolution_clock::now();
+        return std::chrono::duration<double, std::milli>(t1 - t0).count();
+    }
+
     CUDA_CHECK(cudaMemcpy(dst, src, bytes, kind));
-    auto t1 = std::chrono::high_resolution_clock::now();
-    return std::chrono::duration<double, std::milli>(t1 - t0).count();
+    return 0.0;
 }
 
 static double vector_norm_host(const std::vector<double> &v, int len)
@@ -225,7 +241,8 @@ __global__ void zero_row_after_kernel(double *A, int lda,
 }
 
 Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
-                                GpuBidiagStats *stats)
+                                GpuBidiagStats *stats,
+                                bool enable_profile)
 {
     if (A.rows() < A.cols())
     {
@@ -276,9 +293,9 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
     CUDA_CHECK(cudaMalloc(&d_vec, static_cast<size_t>(max_dim) * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_work, static_cast<size_t>(max_dim) * sizeof(double)));
 
-    local_stats.h2d_ms += timed_cuda_memcpy(d_B, B.data(), bytes_B, cudaMemcpyHostToDevice);
-    local_stats.h2d_ms += timed_cuda_memcpy(d_U, U.data(), bytes_U, cudaMemcpyHostToDevice);
-    local_stats.h2d_ms += timed_cuda_memcpy(d_V, V.data(), bytes_V, cudaMemcpyHostToDevice);
+    local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_B, B.data(), bytes_B, cudaMemcpyHostToDevice);
+    local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_U, U.data(), bytes_U, cudaMemcpyHostToDevice);
+    local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_V, V.data(), bytes_V, cudaMemcpyHostToDevice);
 
     std::vector<double> h_tmp(max_dim, 0.0);
     std::vector<double> h_v(max_dim, 0.0);
@@ -298,11 +315,11 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
         if (rows_left > 0)
         {
             const int grid_extract = (rows_left + threads - 1) / threads;
-            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+            CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                               extract_col_segment_kernel<<<grid_extract, threads>>>(
                                   d_B, d_vec, n, k, k, rows_left));
 
-            local_stats.d2h_ms += timed_cuda_memcpy(h_tmp.data(), d_vec,
+            local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, h_tmp.data(), d_vec,
                                                     static_cast<size_t>(rows_left) * sizeof(double),
                                                     cudaMemcpyDeviceToHost);
         }
@@ -325,12 +342,12 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
             {
                 const double beta = 2.0 / vTv;
 
-                local_stats.h2d_ms += timed_cuda_memcpy(d_vec, h_v.data(),
+                local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_vec, h_v.data(),
                                                         static_cast<size_t>(rows_left) * sizeof(double),
                                                         cudaMemcpyHostToDevice);
 
                 // w = v^T * B[k:m, k:n], length = cols_left
-                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                   dot_cols_kernel<<<cols_left, threads, reduce_smem>>>(
                                       d_B, d_vec, d_work,
                                       rows_left, cols_left, n, k, k));
@@ -339,14 +356,14 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
                 {
                     dim3 grid2d((cols_left + block2d.x - 1) / block2d.x,
                                 (rows_left + block2d.y - 1) / block2d.y);
-                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                    CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                       ger_row_major_kernel<<<grid2d, block2d>>>(
                                           d_B, d_vec, d_work, beta,
                                           rows_left, cols_left, n, k, k));
                 }
 
                 // wU = U[:, k:m] * v, length = m
-                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                   dot_rows_kernel<<<m, threads, reduce_smem>>>(
                                       d_U, d_vec, d_work,
                                       m, rows_left, m, 0, k));
@@ -355,7 +372,7 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
                 {
                     dim3 grid2d((rows_left + block2d.x - 1) / block2d.x,
                                 (m + block2d.y - 1) / block2d.y);
-                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                    CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                       ger_row_major_kernel<<<grid2d, block2d>>>(
                                           d_U, d_work, d_vec, beta,
                                           m, rows_left, m, 0, k));
@@ -367,7 +384,7 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
         {
             const int len_zero = m - (k + 1);
             const int grid_zero = (len_zero + threads - 1) / threads;
-            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+            CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                               zero_col_below_kernel<<<grid_zero, threads>>>(d_B, n, k, m));
         }
 
@@ -380,11 +397,11 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
             const int rows_right = m - k;
 
             const int grid_extract = (len + threads - 1) / threads;
-            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+            CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                               extract_row_segment_kernel<<<grid_extract, threads>>>(
                                   d_B, d_vec, n, k, k + 1, len));
 
-            local_stats.d2h_ms += timed_cuda_memcpy(h_tmp.data(), d_vec,
+            local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, h_tmp.data(), d_vec,
                                                     static_cast<size_t>(len) * sizeof(double),
                                                     cudaMemcpyDeviceToHost);
 
@@ -406,12 +423,12 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
                 {
                     const double beta = 2.0 / vTv;
 
-                    local_stats.h2d_ms += timed_cuda_memcpy(d_vec, h_v.data(),
+                    local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_vec, h_v.data(),
                                                             static_cast<size_t>(len) * sizeof(double),
                                                             cudaMemcpyHostToDevice);
 
                     // w = B[k:m, k+1:n] * v, length = rows_right
-                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                    CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                       dot_rows_kernel<<<rows_right, threads, reduce_smem>>>(
                                           d_B, d_vec, d_work,
                                           rows_right, len, n, k, k + 1));
@@ -420,14 +437,14 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
                     {
                         dim3 grid2d((len + block2d.x - 1) / block2d.x,
                                     (rows_right + block2d.y - 1) / block2d.y);
-                        CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                        CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                           ger_row_major_kernel<<<grid2d, block2d>>>(
                                               d_B, d_work, d_vec, beta,
                                               rows_right, len, n, k, k + 1));
                     }
 
                     // wV = V[:, k+1:n] * v, length = n
-                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                    CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                       dot_rows_kernel<<<n, threads, reduce_smem>>>(
                                           d_V, d_vec, d_work,
                                           n, len, n, 0, k + 1));
@@ -436,7 +453,7 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
                     {
                         dim3 grid2d((len + block2d.x - 1) / block2d.x,
                                     (n + block2d.y - 1) / block2d.y);
-                        CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                        CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                           ger_row_major_kernel<<<grid2d, block2d>>>(
                                               d_V, d_work, d_vec, beta,
                                               n, len, n, 0, k + 1));
@@ -448,15 +465,15 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
             {
                 const int len_zero = n - (k + 2);
                 const int grid_zero = (len_zero + threads - 1) / threads;
-                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                   zero_row_after_kernel<<<grid_zero, threads>>>(d_B, n, k, n));
             }
         }
     }
 
-    local_stats.d2h_ms += timed_cuda_memcpy(B.data(), d_B, bytes_B, cudaMemcpyDeviceToHost);
-    local_stats.d2h_ms += timed_cuda_memcpy(U.data(), d_U, bytes_U, cudaMemcpyDeviceToHost);
-    local_stats.d2h_ms += timed_cuda_memcpy(V.data(), d_V, bytes_V, cudaMemcpyDeviceToHost);
+    local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, B.data(), d_B, bytes_B, cudaMemcpyDeviceToHost);
+    local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, U.data(), d_U, bytes_U, cudaMemcpyDeviceToHost);
+    local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, V.data(), d_V, bytes_V, cudaMemcpyDeviceToHost);
 
     CUDA_CHECK(cudaFree(d_B));
     CUDA_CHECK(cudaFree(d_U));
@@ -467,14 +484,17 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
     const auto t_total_end = Clock::now();
     local_stats.total_ms = std::chrono::duration<double, std::milli>(t_total_end - t_total_beg).count();
 
-    local_stats.other_ms = local_stats.total_ms
-                        - local_stats.h2d_ms
-                        - local_stats.d2h_ms
-                        - local_stats.kernel_ms;
-
-    if (local_stats.other_ms < 0.0 && local_stats.other_ms > -1e-6)
+    if (enable_profile)
     {
-        local_stats.other_ms = 0.0;
+        local_stats.other_ms = local_stats.total_ms
+                            - local_stats.h2d_ms
+                            - local_stats.d2h_ms
+                            - local_stats.kernel_ms;
+
+        if (local_stats.other_ms < 0.0 && local_stats.other_ms > -1e-6)
+        {
+            local_stats.other_ms = 0.0;
+        }
     }
 
     if (stats)
@@ -486,7 +506,8 @@ Matrix to_bidiagonal_gpu_kernel(const Matrix &A, Matrix &U, Matrix &V,
 }
 
 Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
-                                GpuBidiagStats *stats)
+                                GpuBidiagStats *stats,
+                                bool enable_profile)
 {
     if (A.rows() < A.cols())
     {
@@ -540,9 +561,9 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
     cublasHandle_t handle;
     CUBLAS_CHECK(cublasCreate(&handle));
 
-    local_stats.h2d_ms += timed_cuda_memcpy(d_B, B.data(), bytes_B, cudaMemcpyHostToDevice);
-    local_stats.h2d_ms += timed_cuda_memcpy(d_U, U.data(), bytes_U, cudaMemcpyHostToDevice);
-    local_stats.h2d_ms += timed_cuda_memcpy(d_V, V.data(), bytes_V, cudaMemcpyHostToDevice);
+    local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_B, B.data(), bytes_B, cudaMemcpyHostToDevice);
+    local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_U, U.data(), bytes_U, cudaMemcpyHostToDevice);
+    local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_V, V.data(), bytes_V, cudaMemcpyHostToDevice);
 
     std::vector<double> h_tmp(max_dim, 0.0);
     std::vector<double> h_v(max_dim, 0.0);
@@ -565,11 +586,11 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
         if (rows_left > 0)
         {
             const int grid_extract = (rows_left + threads - 1) / threads;
-            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+            CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                               extract_col_segment_kernel<<<grid_extract, threads>>>(
                                   d_B, d_vec, n, k, k, rows_left));
 
-            local_stats.d2h_ms += timed_cuda_memcpy(h_tmp.data(), d_vec,
+            local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, h_tmp.data(), d_vec,
                                                     static_cast<size_t>(rows_left) * sizeof(double),
                                                     cudaMemcpyDeviceToHost);
         }
@@ -593,7 +614,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                 const double beta = 2.0 / vTv;
                 const double neg_beta = -beta;
 
-                local_stats.h2d_ms += timed_cuda_memcpy(d_vec, h_v.data(),
+                local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_vec, h_v.data(),
                                                         static_cast<size_t>(rows_left) * sizeof(double),
                                                         cudaMemcpyHostToDevice);
 
@@ -604,7 +625,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                 //
                 // w = v^T * B_sub
                 // 等价于 w = B_sub^T * v
-                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                   CUBLAS_CHECK(cublasDgemv(handle,
                                                            CUBLAS_OP_N,
                                                            cols_left, rows_left,
@@ -617,7 +638,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                 // B_sub <- B_sub - beta * v * w^T
                 // 在 column-major 转置视图下：
                 // B_sub^T <- B_sub^T - beta * w * v^T
-                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                   CUBLAS_CHECK(cublasDger(handle,
                                                           cols_left, rows_left,
                                                           &neg_beta,
@@ -631,7 +652,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                 // row-major U_sub(m x rows_left)
                 // cuBLAS 视图是 U_sub^T(rows_left x m)
                 // 因此 wU = (U_sub^T)^T * v
-                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                   CUBLAS_CHECK(cublasDgemv(handle,
                                                            CUBLAS_OP_T,
                                                            rows_left, m,
@@ -644,7 +665,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                 // U[:, k:m] <- U[:, k:m] - beta * wU * v^T
                 // 转置视图下：
                 // U_sub^T <- U_sub^T - beta * v * wU^T
-                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                   CUBLAS_CHECK(cublasDger(handle,
                                                           rows_left, m,
                                                           &neg_beta,
@@ -658,7 +679,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
         {
             const int len_zero = m - (k + 1);
             const int grid_zero = (len_zero + threads - 1) / threads;
-            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+            CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                               zero_col_below_kernel<<<grid_zero, threads>>>(d_B, n, k, m));
         }
 
@@ -672,11 +693,11 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
             const int rows_right = m - k;
 
             const int grid_extract = (len + threads - 1) / threads;
-            CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+            CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                               extract_row_segment_kernel<<<grid_extract, threads>>>(
                                   d_B, d_vec, n, k, k + 1, len));
 
-            local_stats.d2h_ms += timed_cuda_memcpy(h_tmp.data(), d_vec,
+            local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, h_tmp.data(), d_vec,
                                                     static_cast<size_t>(len) * sizeof(double),
                                                     cudaMemcpyDeviceToHost);
 
@@ -699,7 +720,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                     const double beta = 2.0 / vTv;
                     const double neg_beta = -beta;
 
-                    local_stats.h2d_ms += timed_cuda_memcpy(d_vec, h_v.data(),
+                    local_stats.h2d_ms += cuda_memcpy_profiled(enable_profile, d_vec, h_v.data(),
                                                             static_cast<size_t>(len) * sizeof(double),
                                                             cudaMemcpyHostToDevice);
 
@@ -709,7 +730,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                     // row-major B_sub(rows_right x len)
                     // cuBLAS 视图是 B_sub^T(len x rows_right)
                     // 因此 w = (B_sub^T)^T * v
-                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                    CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                       CUBLAS_CHECK(cublasDgemv(handle,
                                                                CUBLAS_OP_T,
                                                                len, rows_right,
@@ -722,7 +743,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                     // B_sub <- B_sub - beta * w * v^T
                     // 转置视图下：
                     // B_sub^T <- B_sub^T - beta * v * w^T
-                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                    CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                       CUBLAS_CHECK(cublasDger(handle,
                                                               len, rows_right,
                                                               &neg_beta,
@@ -735,7 +756,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                     // wV = V[:, k+1:n] * v
                     // row-major V_sub(n x len)
                     // cuBLAS 视图是 V_sub^T(len x n)
-                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                    CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                       CUBLAS_CHECK(cublasDgemv(handle,
                                                                CUBLAS_OP_T,
                                                                len, n,
@@ -748,7 +769,7 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
                     // V[:, k+1:n] <- V[:, k+1:n] - beta * wV * v^T
                     // 转置视图下：
                     // V_sub^T <- V_sub^T - beta * v * wV^T
-                    CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                    CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                       CUBLAS_CHECK(cublasDger(handle,
                                                               len, n,
                                                               &neg_beta,
@@ -762,15 +783,15 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
             {
                 const int len_zero = n - (k + 2);
                 const int grid_zero = (len_zero + threads - 1) / threads;
-                CUDA_LAUNCH_TIMED(local_stats.kernel_ms,
+                CUDA_LAUNCH_PROFILED(enable_profile, local_stats.kernel_ms,
                                   zero_row_after_kernel<<<grid_zero, threads>>>(d_B, n, k, n));
             }
         }
     }
 
-    local_stats.d2h_ms += timed_cuda_memcpy(B.data(), d_B, bytes_B, cudaMemcpyDeviceToHost);
-    local_stats.d2h_ms += timed_cuda_memcpy(U.data(), d_U, bytes_U, cudaMemcpyDeviceToHost);
-    local_stats.d2h_ms += timed_cuda_memcpy(V.data(), d_V, bytes_V, cudaMemcpyDeviceToHost);
+    local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, B.data(), d_B, bytes_B, cudaMemcpyDeviceToHost);
+    local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, U.data(), d_U, bytes_U, cudaMemcpyDeviceToHost);
+    local_stats.d2h_ms += cuda_memcpy_profiled(enable_profile, V.data(), d_V, bytes_V, cudaMemcpyDeviceToHost);
 
     CUBLAS_CHECK(cublasDestroy(handle));
 
@@ -783,14 +804,17 @@ Matrix to_bidiagonal_gpu_cublas(const Matrix &A, Matrix &U, Matrix &V,
     const auto t_total_end = Clock::now();
     local_stats.total_ms = std::chrono::duration<double, std::milli>(t_total_end - t_total_beg).count();
 
-    local_stats.other_ms = local_stats.total_ms
+    if (enable_profile)
+    {
+        local_stats.other_ms = local_stats.total_ms
                          - local_stats.h2d_ms
                          - local_stats.d2h_ms
                          - local_stats.kernel_ms;
 
-    if (local_stats.other_ms < 0.0 && local_stats.other_ms > -1e-6)
-    {
-        local_stats.other_ms = 0.0;
+        if (local_stats.other_ms < 0.0 && local_stats.other_ms > -1e-6)
+        {
+            local_stats.other_ms = 0.0;
+        }
     }
 
     if (stats)

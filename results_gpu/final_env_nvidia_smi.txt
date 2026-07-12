@@ -1,0 +1,43 @@
+Sat Jul 11 17:51:58 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 560.94                 Driver Version: 560.94         CUDA Version: 12.6     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                  Driver-Model | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4060 ...  WDDM  |   00000000:01:00.0  On |                  N/A |
+| N/A   39C    P0             15W /   80W |    1046MiB /   8188MiB |      1%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A      3936    C+G   C:\Windows\System32\ShellHost.exe           N/A      |
+|    0   N/A  N/A      6740    C+G   ...cw5n1h2txyewy\CrossDeviceResume.exe      N/A      |
+|    0   N/A  N/A      7032    C+G   ...crosoft\Edge\Application\msedge.exe      N/A      |
+|    0   N/A  N/A      7656    C+G   C:\Windows\System32\NahimicSvc64.exe        N/A      |
+|    0   N/A  N/A      8320    C+G   ...on\wallpaper_engine\wallpaper32.exe      N/A      |
+|    0   N/A  N/A      8588    C+G   ...ram Files\Tencent\Weixin\Weixin.exe      N/A      |
+|    0   N/A  N/A     10036    C+G   ...tionsPlus\logioptionsplus_agent.exe      N/A      |
+|    0   N/A  N/A     10492    C+G   ...GeForce Experience\NVIDIA Share.exe      N/A      |
+|    0   N/A  N/A     10640    C+G   C:\Windows\explorer.exe                     N/A      |
+|    0   N/A  N/A     14400    C+G   E:\QQ\QQ.exe                                N/A      |
+|    0   N/A  N/A     14660    C+G   ...nt.CBS_cw5n1h2txyewy\SearchHost.exe      N/A      |
+|    0   N/A  N/A     14672    C+G   ...2txyewy\StartMenuExperienceHost.exe      N/A      |
+|    0   N/A  N/A     14972    C+G   ...9\extracted\runtime\WeChatAppEx.exe      N/A      |
+|    0   N/A  N/A     15504    C+G   ...CBS_cw5n1h2txyewy\TextInputHost.exe      N/A      |
+|    0   N/A  N/A     15584    C+G   D:\todesk\ToDesk.exe                        N/A      |
+|    0   N/A  N/A     17184    C+G   ...on\150.0.4078.65\msedgewebview2.exe      N/A      |
+|    0   N/A  N/A     22856    C+G   ...crosoft\Edge\Application\msedge.exe      N/A      |
+|    0   N/A  N/A     25084    C+G   ...nr4m\radeonsoftware\AMDRSSrcExt.exe      N/A      |
+|    0   N/A  N/A     25232    C+G   ...1.0_x64__w2gh52qy24etm\Nahimic3.exe      N/A      |
+|    0   N/A  N/A     25388    C+G   ...s\System32\ApplicationFrameHost.exe      N/A      |
+|    0   N/A  N/A     25396    C+G   ...m\radeonsoftware\RadeonSoftware.exe      N/A      |
+|    0   N/A  N/A     28348    C+G   ...on\150.0.4078.65\msedgewebview2.exe      N/A      |
+|    0   N/A  N/A     31104    C+G   E:\QQ\QQEX.exe                              N/A      |
+|    0   N/A  N/A     33540    C+G   ...__8wekyb3d8bbwe\WindowsTerminal.exe      N/A      |
++-----------------------------------------------------------------------------------------+

@@ -1,0 +1,60 @@
+﻿Timestamp: 2026-07-12T03:01:18.3203573+08:00
+
+powercfg /getactivescheme:
+电源方案 GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (平衡)
+
+Battery / AC status:
+
+
+nvidia-smi:
+Sun Jul 12 03:01:18 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 560.94                 Driver Version: 560.94         CUDA Version: 12.6     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                  Driver-Model | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4060 ...  WDDM  |   00000000:01:00.0  On |                  N/A |
+| N/A   48C    P5              7W /   73W |    1096MiB /   8188MiB |     32%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A      1196    C+G   ...ram Files\Tencent\Weixin\Weixin.exe      N/A      |
+|    0   N/A  N/A      1864    C+G   C:\Windows\System32\ShellHost.exe           N/A      |
+|    0   N/A  N/A      2220    C+G   ...on\wallpaper_engine\wallpaper32.exe      N/A      |
+|    0   N/A  N/A      5760    C+G   ...nr4m\radeonsoftware\AMDRSSrcExt.exe      N/A      |
+|    0   N/A  N/A     11732    C+G   C:\Windows\explorer.exe                     N/A      |
+|    0   N/A  N/A     12596    C+G   ...siveControlPanel\SystemSettings.exe      N/A      |
+|    0   N/A  N/A     13088    C+G   C:\Windows\System32\NahimicSvc64.exe        N/A      |
+|    0   N/A  N/A     14116    C+G   ...m\radeonsoftware\RadeonSoftware.exe      N/A      |
+|    0   N/A  N/A     14300    C+G   ...2txyewy\StartMenuExperienceHost.exe      N/A      |
+|    0   N/A  N/A     15064    C+G   ...nt.CBS_cw5n1h2txyewy\SearchHost.exe      N/A      |
+|    0   N/A  N/A     16120    C+G   ...CBS_cw5n1h2txyewy\TextInputHost.exe      N/A      |
+|    0   N/A  N/A     18744    C+G   ...t.LockApp_cw5n1h2txyewy\LockApp.exe      N/A      |
+|    0   N/A  N/A     21520    C+G   ...GeForce Experience\NVIDIA Share.exe      N/A      |
+|    0   N/A  N/A     22064    C+G   ...GeForce Experience\NVIDIA Share.exe      N/A      |
+|    0   N/A  N/A     25444    C+G   ...1.0_x64__w2gh52qy24etm\Nahimic3.exe      N/A      |
+|    0   N/A  N/A     30628    C+G   ...5n1h2txyewy\ShellExperienceHost.exe      N/A      |
+|    0   N/A  N/A     36124    C+G   ...crosoft\Edge\Application\msedge.exe      N/A      |
+|    0   N/A  N/A     39700    C+G   ...__8wekyb3d8bbwe\WindowsTerminal.exe      N/A      |
++-----------------------------------------------------------------------------------------+
+
+nvidia-smi query:
+name, driver_version, pstate, temperature.gpu, power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], memory.used [MiB]
+NVIDIA GeForce RTX 4060 Laptop GPU, 560.94, P5, 48, 7.41 W, 510 MHz, 810 MHz, 1111 MiB
+
+GPU process snapshot:
+The feature is not supported in this configuration
+Not supported on the device(s)
+Failed to process command line 
+
+
+Additional AC status probes:
+
+

@@ -1,0 +1,6 @@
+实现版本: cpu
+[bench] impl=cpu n=1000 repeat=1 seed_policy=fixed gpu_profile=0 gkh_profile=1 full_svd=1 verify=1
+[gkh-profile] rep=0 seed=20261408 mode=1 converged=1 outer_iterations=1434 block_steps=1441 left_rotations=779095 right_rotations=779095 total_rotations=1558190 zero_chase_calls=0 deflations=997 total_nontrivial_blocks=1441 avg_nontrivial_blocks=1.00488 iterations_with_multiple_blocks=6 multiple_block_ratio=0.0041841 max_nontrivial_blocks=3 avg_nontrivial_block_size=541.663 max_block_size=1000
+[bench-verify] rep=0 rel_recon=3.51826e-13 orth_u=2.50948e-13 orth_v=2.46897e-13 diag_err=0 order_err=0 nonneg=1 converged=1 pass=1
+[bench-run] rep=0 seed=20261408 gpu_profile=0 gkh_profile=1 bidiag_ms=2052.91 gkh_ms=7311.15 total_ms=9364.06
+[bench-summary] impl=cpu n=1000 repeat=1 seed_policy=fixed gpu_profile=0 gkh_profile=1 avg_bidiag_ms=2052.91 avg_gkh_ms=7311.15 avg_total_ms=9364.06 pass=1

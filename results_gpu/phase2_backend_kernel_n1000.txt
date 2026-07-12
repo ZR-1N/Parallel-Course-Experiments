@@ -1,0 +1,8 @@
+实现版本: gpu_kernel
+GPU profiling: 0
+CUDA warmup/context init(ms): 135.642
+[bench] impl=gpu_kernel n=1000 repeat=1 seed_policy=fixed gpu_profile=0 gkh_profile=1 full_svd=1 verify=1
+[gkh-profile] rep=0 seed=20261408 mode=1 converged=1 outer_iterations=1434 block_steps=1441 left_rotations=779095 right_rotations=779095 total_rotations=1558190 zero_chase_calls=0 deflations=998 total_nontrivial_blocks=1441 avg_nontrivial_blocks=1.00488 iterations_with_multiple_blocks=6 multiple_block_ratio=0.0041841 max_nontrivial_blocks=3 avg_nontrivial_block_size=541.663 max_block_size=1000
+[bench-verify] rep=0 rel_recon=3.52112e-13 orth_u=2.33307e-13 orth_v=2.37718e-13 diag_err=0 order_err=0 nonneg=1 converged=1 pass=1
+[bench-run] rep=0 seed=20261408 gpu_profile=0 gkh_profile=1 bidiag_ms=287.128 gkh_ms=6866.8 total_ms=7153.93 gpu_total_ms=287.115 profile_breakdown=disabled
+[bench-summary] impl=gpu_kernel n=1000 repeat=1 seed_policy=fixed gpu_profile=0 gkh_profile=1 avg_bidiag_ms=287.128 avg_gkh_ms=6866.8 avg_total_ms=7153.93 avg_gpu_total_ms=287.115 profile_breakdown=disabled pass=1

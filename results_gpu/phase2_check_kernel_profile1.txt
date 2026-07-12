@@ -1,0 +1,98 @@
+实现版本: gpu_kernel
+GPU profiling: 0
+CUDA warmup/context init(ms): 132.641
+=== 固定值 5x5 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 3.87069e-12
+  relative recon error      : 2.76668e-13
+  ||U^T U-I||_F             : 1.63847e-15
+  ||V^T V-I||_F             : 1.44025e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 1.4174
+  time gkh iteration(ms)    : 0.0145
+  gkh profile mode          : 1
+[gkh-profile] mode=1 converged=1 outer_iterations=10 block_steps=9 left_rotations=27 right_rotations=27 total_rotations=54 zero_chase_calls=0 deflations=3 total_nontrivial_blocks=9 avg_nontrivial_blocks=0.9 iterations_with_multiple_blocks=0 multiple_block_ratio=0 max_nontrivial_blocks=1 avg_nontrivial_block_size=4 max_block_size=5
+  gpu total inside(ms)      : 1.4156
+  gpu profile enabled       : 0
+  gpu profile breakdown     : disabled
+  结果: PASS
+
+=== 随机 8x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.46469e-14
+  relative recon error      : 9.28211e-16
+  ||U^T U-I||_F             : 2.37025e-15
+  ||V^T V-I||_F             : 2.00491e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 1.6701
+  time gkh iteration(ms)    : 0.0204
+  gkh profile mode          : 1
+[gkh-profile] mode=1 converged=1 outer_iterations=16 block_steps=15 left_rotations=71 right_rotations=71 total_rotations=142 zero_chase_calls=0 deflations=7 total_nontrivial_blocks=15 avg_nontrivial_blocks=0.9375 iterations_with_multiple_blocks=0 multiple_block_ratio=0 max_nontrivial_blocks=1 avg_nontrivial_block_size=5.73333 max_block_size=8
+  gpu total inside(ms)      : 1.6693
+  gpu profile enabled       : 0
+  gpu profile breakdown     : disabled
+  结果: PASS
+
+=== 近秩亏损 10x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 9.88086e-15
+  relative recon error      : 7.97801e-16
+  ||U^T U-I||_F             : 2.26944e-15
+  ||V^T V-I||_F             : 1.62815e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 1.645
+  time gkh iteration(ms)    : 0.0153
+  gkh profile mode          : 1
+[gkh-profile] mode=1 converged=1 outer_iterations=15 block_steps=14 left_rotations=66 right_rotations=66 total_rotations=132 zero_chase_calls=0 deflations=7 total_nontrivial_blocks=14 avg_nontrivial_blocks=0.933333 iterations_with_multiple_blocks=0 multiple_block_ratio=0 max_nontrivial_blocks=1 avg_nontrivial_block_size=5.71429 max_block_size=8
+  gpu total inside(ms)      : 1.6443
+  gpu profile enabled       : 0
+  gpu profile breakdown     : disabled
+  结果: PASS
+
+=== 随机 10x8 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 1.27373e-12
+  relative recon error      : 5.84626e-14
+  ||U^T U-I||_F             : 2.24227e-15
+  ||V^T V-I||_F             : 1.54331e-15
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 1.4207
+  time gkh iteration(ms)    : 0.0154
+  gkh profile mode          : 1
+[gkh-profile] mode=1 converged=1 outer_iterations=19 block_steps=18 left_rotations=82 right_rotations=82 total_rotations=164 zero_chase_calls=0 deflations=6 total_nontrivial_blocks=18 avg_nontrivial_blocks=0.947368 iterations_with_multiple_blocks=0 multiple_block_ratio=0 max_nontrivial_blocks=1 avg_nontrivial_block_size=5.55556 max_block_size=8
+  gpu total inside(ms)      : 1.4203
+  gpu profile enabled       : 0
+  gpu profile breakdown     : disabled
+  结果: PASS
+
+=== 随机 1000x1000 ===
+  converged                 : yes
+  ||A-U*S*V^T||_F           : 2.06451e-10
+  relative recon error      : 3.57173e-13
+  ||U^T U-I||_F             : 2.32795e-13
+  ||V^T V-I||_F             : 2.32245e-13
+  diagonal structure error  : 0
+  descending order error    : 0
+  nonnegative diagonal      : yes
+  time bidiagonalization(ms): 298.39
+  time gkh iteration(ms)    : 6970.16
+  gkh profile mode          : 1
+[gkh-profile] mode=1 converged=1 outer_iterations=1425 block_steps=1428 left_rotations=775151 right_rotations=775151 total_rotations=1550302 zero_chase_calls=0 deflations=999 total_nontrivial_blocks=1428 avg_nontrivial_blocks=1.00211 iterations_with_multiple_blocks=4 multiple_block_ratio=0.00280702 max_nontrivial_blocks=2 avg_nontrivial_block_size=543.823 max_block_size=1000
+  gpu total inside(ms)      : 298.387
+  gpu profile enabled       : 0
+  gpu profile breakdown     : disabled
+  结果: PASS
+
+==============================
+随机种子基值: 20260408
+总上二对角化耗时(ms): 304.543
+总GKH迭代耗时(ms): 6970.23
+通过: 5 / 5

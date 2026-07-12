@@ -1,0 +1,9 @@
+实现版本: cpu
+[bench] impl=cpu n=512 repeat=5 seed_policy=fixed gpu_profile=0 full_svd=0 verify=1
+[bench-verify] rep=0 rel_recon=4.22212e-15 orth_u=7.34678e-14 orth_v=7.45803e-14 bidiag_structure_err=0 pass=1
+[bench-run] rep=0 seed=20261408 gpu_profile=0 bidiag_ms=230.767 gkh_ms=0 total_ms=230.767
+[bench-run] rep=1 seed=20261408 gpu_profile=0 bidiag_ms=255.399 gkh_ms=0 total_ms=255.399
+[bench-run] rep=2 seed=20261408 gpu_profile=0 bidiag_ms=220.355 gkh_ms=0 total_ms=220.355
+[bench-run] rep=3 seed=20261408 gpu_profile=0 bidiag_ms=222.727 gkh_ms=0 total_ms=222.727
+[bench-run] rep=4 seed=20261408 gpu_profile=0 bidiag_ms=218.16 gkh_ms=0 total_ms=218.16
+[bench-summary] impl=cpu n=512 repeat=5 seed_policy=fixed gpu_profile=0 avg_bidiag_ms=229.482 avg_gkh_ms=0 avg_total_ms=229.482 pass=1

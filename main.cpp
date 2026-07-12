@@ -129,9 +129,93 @@ static bool nonnegative_diag(const Matrix &S)
     return true;
 }
 
+static bool valid_seed_policy(const std::string &seed_policy)
+{
+    return seed_policy == "fixed" || seed_policy == "sequence";
+}
+
+static long long bench_actual_seed(long long base_seed, int rep, const std::string &seed_policy)
+{
+    if (seed_policy == "fixed")
+    {
+        return base_seed + 1000;
+    }
+
+    return base_seed + 1000 + rep;
+}
+
+static void print_gkh_profile_line(int rep,
+                                   long long seed,
+                                   bool has_seed,
+                                   bool converged,
+                                   const GKHProfile &profile)
+{
+    const long long total_rotations = profile.left_rotations + profile.right_rotations;
+    const double avg_nontrivial_blocks =
+        (profile.outer_iterations > 0)
+            ? static_cast<double>(profile.total_nontrivial_blocks) /
+                  static_cast<double>(profile.outer_iterations)
+            : 0.0;
+    const double multiple_block_ratio =
+        (profile.outer_iterations > 0)
+            ? static_cast<double>(profile.iterations_with_multiple_blocks) /
+                  static_cast<double>(profile.outer_iterations)
+            : 0.0;
+    const double avg_nontrivial_block_size =
+        (profile.total_nontrivial_blocks > 0)
+            ? static_cast<double>(profile.total_nontrivial_block_sizes) /
+                  static_cast<double>(profile.total_nontrivial_blocks)
+            : 0.0;
+
+    std::cout << "[gkh-profile]";
+    if (rep >= 0)
+    {
+        std::cout << " rep=" << rep;
+    }
+    if (has_seed)
+    {
+        std::cout << " seed=" << seed;
+    }
+    std::cout << " mode=" << profile.mode
+              << " converged=" << (converged ? 1 : 0)
+              << " outer_iterations=" << profile.outer_iterations
+              << " block_steps=" << profile.block_steps
+              << " left_rotations=" << profile.left_rotations
+              << " right_rotations=" << profile.right_rotations
+              << " total_rotations=" << total_rotations
+              << " zero_chase_calls=" << profile.zero_chase_calls
+              << " deflations=" << profile.deflations
+              << " total_nontrivial_blocks=" << profile.total_nontrivial_blocks
+              << " avg_nontrivial_blocks=" << avg_nontrivial_blocks
+              << " iterations_with_multiple_blocks=" << profile.iterations_with_multiple_blocks
+              << " multiple_block_ratio=" << multiple_block_ratio
+              << " max_nontrivial_blocks=" << profile.max_nontrivial_blocks
+              << " avg_nontrivial_block_size=" << avg_nontrivial_block_size
+              << " max_block_size=" << profile.max_block_size;
+
+    if (profile.mode == 2)
+    {
+        const double profiled_phase_total_ms = profile.cleanup_ms +
+                                               profile.zero_handle_ms +
+                                               profile.split_ms +
+                                               profile.block_step_ms +
+                                               profile.finalize_ms;
+        std::cout << " cleanup_ms=" << profile.cleanup_ms
+                  << " zero_handle_ms=" << profile.zero_handle_ms
+                  << " split_ms=" << profile.split_ms
+                  << " block_step_ms=" << profile.block_step_ms
+                  << " finalize_ms=" << profile.finalize_ms
+                  << " profiled_phase_total_ms=" << profiled_phase_total_ms;
+    }
+
+    std::cout << "\n";
+}
+
 static bool run_case(const std::string &name, const Matrix &A,
                      double &sum_bidiag_ms, double &sum_gkh_ms,
-                     const std::string &impl)
+                     const std::string &impl,
+                     bool gpu_profile,
+                     int gkh_profile)
 {
     std::cout << "=== " << name << " ===\n";
 
@@ -149,11 +233,11 @@ static bool run_case(const std::string &name, const Matrix &A,
     #ifdef USE_CUDA_BIDIAG
     if (impl == "gpu_kernel")
     {
-        B = to_bidiagonal_gpu_kernel(A, U, V, &gpu_stats);
+        B = to_bidiagonal_gpu_kernel(A, U, V, &gpu_stats, gpu_profile);
     }
     else if (impl == "gpu_cublas")
     {
-        B = to_bidiagonal_gpu_cublas(A, U, V, &gpu_stats);
+        B = to_bidiagonal_gpu_cublas(A, U, V, &gpu_stats, gpu_profile);
     }
     else
     #endif
@@ -163,8 +247,12 @@ static bool run_case(const std::string &name, const Matrix &A,
 
     const auto t_end_bidiag = Clock::now();
 
+    GKHProfile gkh_stats;
+    gkh_stats.mode = gkh_profile;
+    GKHProfile *gkh_stats_ptr = (gkh_profile > 0) ? &gkh_stats : nullptr;
+
     const auto t_beg_gkh = Clock::now();
-    const bool converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12);
+    const bool converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12, gkh_stats_ptr);
     const auto t_end_gkh = Clock::now();
 
     const double time_bidiag_ms = std::chrono::duration<double, std::milli>(t_end_bidiag - t_beg_bidiag).count();
@@ -191,14 +279,27 @@ static bool run_case(const std::string &name, const Matrix &A,
     std::cout << "  nonnegative diagonal      : " << (ok_nonneg ? "yes" : "no") << "\n";
     std::cout << "  time bidiagonalization(ms): " << time_bidiag_ms << "\n";
     std::cout << "  time gkh iteration(ms)    : " << time_gkh_ms << "\n";
+    std::cout << "  gkh profile mode          : " << gkh_profile << "\n";
+    if (gkh_profile > 0)
+    {
+        print_gkh_profile_line(-1, 0, false, converged, gkh_stats);
+    }
     #ifdef USE_CUDA_BIDIAG
     if (impl == "gpu_kernel" || impl == "gpu_cublas")
     {
         std::cout << "  gpu total inside(ms)      : " << gpu_stats.total_ms << "\n";
-        std::cout << "  gpu H2D memcpy(ms)        : " << gpu_stats.h2d_ms << "\n";
-        std::cout << "  gpu D2H memcpy(ms)        : " << gpu_stats.d2h_ms << "\n";
-        std::cout << "  gpu kernel time(ms)       : " << gpu_stats.kernel_ms << "\n";
-        std::cout << "  gpu other overhead(ms)    : " << gpu_stats.other_ms << "\n";
+        std::cout << "  gpu profile enabled       : " << (gpu_profile ? 1 : 0) << "\n";
+        if (gpu_profile)
+        {
+            std::cout << "  gpu H2D memcpy(ms)        : " << gpu_stats.h2d_ms << "\n";
+            std::cout << "  gpu D2H memcpy(ms)        : " << gpu_stats.d2h_ms << "\n";
+            std::cout << "  gpu kernel time(ms)       : " << gpu_stats.kernel_ms << "\n";
+            std::cout << "  gpu other overhead(ms)    : " << gpu_stats.other_ms << "\n";
+        }
+        else
+        {
+            std::cout << "  gpu profile breakdown     : disabled\n";
+        }
     }
     #endif
     const double tol_recon_rel = 1e-8;
@@ -218,11 +319,17 @@ static bool run_bench_case(int n,
                            int repeat,
                            bool full_svd,
                            bool verify,
-                           const std::string &impl)
+                           const std::string &impl,
+                           const std::string &seed_policy,
+                           bool gpu_profile,
+                           int gkh_profile)
 {
     std::cout << "[bench] impl=" << impl
               << " n=" << n
               << " repeat=" << repeat
+              << " seed_policy=" << seed_policy
+              << " gpu_profile=" << (gpu_profile ? 1 : 0)
+              << " gkh_profile=" << gkh_profile
               << " full_svd=" << (full_svd ? 1 : 0)
               << " verify=" << (verify ? 1 : 0)
               << "\n";
@@ -243,7 +350,8 @@ static bool run_bench_case(int n,
 
     for (int rep = 0; rep < repeat; ++rep)
     {
-        Matrix A = Matrix::random(n, n, -1.0, 1.0, base_seed + 1000 + rep);
+        const long long actual_seed = bench_actual_seed(base_seed, rep, seed_policy);
+        Matrix A = Matrix::random(n, n, -1.0, 1.0, actual_seed);
 
         Matrix U, V;
 
@@ -257,11 +365,11 @@ static bool run_bench_case(int n,
 #ifdef USE_CUDA_BIDIAG
         if (impl == "gpu_kernel")
         {
-            B = to_bidiagonal_gpu_kernel(A, U, V, &gpu_stats);
+            B = to_bidiagonal_gpu_kernel(A, U, V, &gpu_stats, gpu_profile);
         }
         else if (impl == "gpu_cublas")
         {
-            B = to_bidiagonal_gpu_cublas(A, U, V, &gpu_stats);
+            B = to_bidiagonal_gpu_cublas(A, U, V, &gpu_stats, gpu_profile);
         }
         else
 #endif
@@ -273,13 +381,21 @@ static bool run_bench_case(int n,
 
         double gkh_ms = 0.0;
         bool converged = true;
+        GKHProfile gkh_stats;
+        gkh_stats.mode = gkh_profile;
 
         if (full_svd)
         {
+            GKHProfile *gkh_stats_ptr = (gkh_profile > 0) ? &gkh_stats : nullptr;
             const auto t_beg_gkh = Clock::now();
-            converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12);
+            converged = gkh_svd_from_bidiagonal(U, B, V, 6000, 1e-12, gkh_stats_ptr);
             const auto t_end_gkh = Clock::now();
             gkh_ms = std::chrono::duration<double, std::milli>(t_end_gkh - t_beg_gkh).count();
+
+            if (gkh_profile > 0)
+            {
+                print_gkh_profile_line(rep, actual_seed, true, converged, gkh_stats);
+            }
         }
 
         const double bidiag_ms =
@@ -359,6 +475,9 @@ static bool run_bench_case(int n,
 #endif
 
         std::cout << "[bench-run] rep=" << rep
+                  << " seed=" << actual_seed
+                  << " gpu_profile=" << (gpu_profile ? 1 : 0)
+                  << " gkh_profile=" << gkh_profile
                   << " bidiag_ms=" << bidiag_ms
                   << " gkh_ms=" << gkh_ms
                   << " total_ms=" << total_ms;
@@ -366,11 +485,18 @@ static bool run_bench_case(int n,
 #ifdef USE_CUDA_BIDIAG
         if (impl == "gpu_kernel" || impl == "gpu_cublas")
         {
-            std::cout << " gpu_total_ms=" << gpu_stats.total_ms
-                      << " gpu_h2d_ms=" << gpu_stats.h2d_ms
-                      << " gpu_d2h_ms=" << gpu_stats.d2h_ms
-                      << " gpu_kernel_ms=" << gpu_stats.kernel_ms
-                      << " gpu_other_ms=" << gpu_stats.other_ms;
+            std::cout << " gpu_total_ms=" << gpu_stats.total_ms;
+            if (gpu_profile)
+            {
+                std::cout << " gpu_h2d_ms=" << gpu_stats.h2d_ms
+                          << " gpu_d2h_ms=" << gpu_stats.d2h_ms
+                          << " gpu_kernel_ms=" << gpu_stats.kernel_ms
+                          << " gpu_other_ms=" << gpu_stats.other_ms;
+            }
+            else
+            {
+                std::cout << " profile_breakdown=disabled";
+            }
         }
 #endif
 
@@ -382,6 +508,9 @@ static bool run_bench_case(int n,
     std::cout << "[bench-summary] impl=" << impl
               << " n=" << n
               << " repeat=" << repeat
+              << " seed_policy=" << seed_policy
+              << " gpu_profile=" << (gpu_profile ? 1 : 0)
+              << " gkh_profile=" << gkh_profile
               << " avg_bidiag_ms=" << sum_bidiag_ms * inv
               << " avg_gkh_ms=" << sum_gkh_ms * inv
               << " avg_total_ms=" << sum_total_ms * inv;
@@ -389,11 +518,18 @@ static bool run_bench_case(int n,
 #ifdef USE_CUDA_BIDIAG
     if (impl == "gpu_kernel" || impl == "gpu_cublas")
     {
-        std::cout << " avg_gpu_total_ms=" << sum_gpu_total_ms * inv
-                  << " avg_gpu_h2d_ms=" << sum_gpu_h2d_ms * inv
-                  << " avg_gpu_d2h_ms=" << sum_gpu_d2h_ms * inv
-                  << " avg_gpu_kernel_ms=" << sum_gpu_kernel_ms * inv
-                  << " avg_gpu_other_ms=" << sum_gpu_other_ms * inv;
+        std::cout << " avg_gpu_total_ms=" << sum_gpu_total_ms * inv;
+        if (gpu_profile)
+        {
+            std::cout << " avg_gpu_h2d_ms=" << sum_gpu_h2d_ms * inv
+                      << " avg_gpu_d2h_ms=" << sum_gpu_d2h_ms * inv
+                      << " avg_gpu_kernel_ms=" << sum_gpu_kernel_ms * inv
+                      << " avg_gpu_other_ms=" << sum_gpu_other_ms * inv;
+        }
+        else
+        {
+            std::cout << " profile_breakdown=disabled";
+        }
     }
 #endif
 
@@ -415,6 +551,9 @@ int main(int argc, char **argv)
     int repeat = 1;
     bool full_svd = false;
     bool verify = true;
+    std::string seed_policy = "sequence";
+    bool gpu_profile = true;
+    int gkh_profile = 0;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -436,7 +575,7 @@ int main(int argc, char **argv)
         {
             repeat = std::stoi(argv[++i]);
         }
-    else if (arg == "--full-svd" && i + 1 < argc)
+        else if (arg == "--full-svd" && i + 1 < argc)
         {
             full_svd = (std::stoi(argv[++i]) != 0);
         }
@@ -444,10 +583,47 @@ int main(int argc, char **argv)
         {
             verify = (std::stoi(argv[++i]) != 0);
         }
+        else if (arg == "--seed-policy" && i + 1 < argc)
+        {
+            seed_policy = argv[++i];
+        }
+        else if (arg == "--gpu-profile" && i + 1 < argc)
+        {
+            const int value = std::stoi(argv[++i]);
+            if (value != 0 && value != 1)
+            {
+                std::cerr << "Invalid --gpu-profile value: " << value << "\n";
+                std::cerr << "Available values: 0, 1\n";
+                return 1;
+            }
+            gpu_profile = (value != 0);
+        }
+        else if (arg == "--gkh-profile" && i + 1 < argc)
+        {
+            gkh_profile = std::stoi(argv[++i]);
+            if (gkh_profile < 0 || gkh_profile > 2)
+            {
+                std::cerr << "Invalid --gkh-profile value: " << gkh_profile << "\n";
+                std::cerr << "Available values: 0, 1, 2\n";
+                return 1;
+            }
+        }
+        else if (arg.rfind("--", 0) == 0)
+        {
+            std::cerr << "Unknown or incomplete option: " << arg << "\n";
+            return 1;
+        }
         else
         {
             base_seed = std::stoll(arg);
         }
+    }
+
+    if (!valid_seed_policy(seed_policy))
+    {
+        std::cerr << "Invalid --seed-policy value: " << seed_policy << "\n";
+        std::cerr << "Available values: fixed, sequence\n";
+        return 1;
     }
 
 #ifdef USE_CUDA_BIDIAG
@@ -482,6 +658,7 @@ int main(int argc, char **argv)
 #ifdef USE_CUDA_BIDIAG
     if (impl == "gpu_kernel" || impl == "gpu_cublas")
     {
+        std::cout << "GPU profiling: " << (gpu_profile ? 1 : 0) << "\n";
         using Clock = std::chrono::high_resolution_clock;
         const auto t0 = Clock::now();
         cuda_bidiag_warmup();
@@ -493,7 +670,8 @@ int main(int argc, char **argv)
 
     if (mode == "bench")
     {
-        const bool ok = run_bench_case(bench_n, base_seed, repeat, full_svd, verify, impl);
+        const bool ok = run_bench_case(bench_n, base_seed, repeat, full_svd, verify,
+                                       impl, seed_policy, gpu_profile, gkh_profile);
         return ok ? 0 : 1;
     }
 
@@ -531,7 +709,7 @@ int main(int argc, char **argv)
         A.at(4, 3) = 2.0;
         A.at(4, 4) = 4.0;
         ++total;
-        if (run_case("固定值 5x5", A, sum_bidiag_ms, sum_gkh_ms, impl))
+        if (run_case("固定值 5x5", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
         {
             ++passed;
         }
@@ -541,7 +719,7 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(8, 8, -3.0, 3.0, base_seed + 1);
         ++total;
-        if (run_case("随机 8x8", A, sum_bidiag_ms, sum_gkh_ms, impl))
+        if (run_case("随机 8x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
         {
             ++passed;
         }
@@ -556,7 +734,7 @@ int main(int argc, char **argv)
             A.at(i, 2) = A.at(i, 0) + 1e-8 * (i + 1);
         }
         ++total;
-        if (run_case("近秩亏损 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl))
+        if (run_case("近秩亏损 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
         {
             ++passed;
         }
@@ -566,7 +744,7 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(10, 8, -4.0, 4.0, base_seed + 3);
         ++total;
-        if (run_case("随机 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl))
+        if (run_case("随机 10x8", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
         {
             ++passed;
         }
@@ -576,7 +754,7 @@ int main(int argc, char **argv)
     {
         Matrix A = Matrix::random(1000, 1000, -1.0, 1.0, base_seed + 4);
         ++total;
-        if (run_case("随机 1000x1000", A, sum_bidiag_ms, sum_gkh_ms, impl))
+        if (run_case("随机 1000x1000", A, sum_bidiag_ms, sum_gkh_ms, impl, gpu_profile, gkh_profile))
         {
             ++passed;
         }

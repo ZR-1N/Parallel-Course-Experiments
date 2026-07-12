@@ -1,0 +1,3 @@
+[bench-summary] impl=cpu n=2000 repeat=3 avg_bidiag_ms=17232.6 avg_gkh_ms=0 avg_total_ms=17232.6 pass=1
+[bench-summary] impl=gpu_kernel n=2000 repeat=3 avg_bidiag_ms=1665.53 avg_gkh_ms=0 avg_total_ms=1665.53 avg_gpu_total_ms=1665.52 avg_gpu_h2d_ms=70.2295 avg_gpu_d2h_ms=78.895 avg_gpu_kernel_ms=1178.02 avg_gpu_other_ms=338.383 pass=1
+[bench-summary] impl=gpu_cublas n=2000 repeat=3 avg_bidiag_ms=1743.45 avg_gkh_ms=0 avg_total_ms=1743.45 avg_gpu_total_ms=1743.45 avg_gpu_h2d_ms=66.3072 avg_gpu_d2h_ms=80.0281 avg_gpu_kernel_ms=1246.99 avg_gpu_other_ms=350.121 pass=1
